@@ -1029,9 +1029,8 @@ namespace ImageDups
         private static void ConfigureLogging()
         {
             string logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ImageDups",
-                "Logs");
+                Path.GetTempPath(),
+                "ImageDups");
             Directory.CreateDirectory(logDirectory);
 
             var hierarchy = (Hierarchy)LogManager.GetRepository();

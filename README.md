@@ -24,5 +24,5 @@ msbuild ImageDups.slnx /t:Build /p:Configuration=Release
 
 The executable is written to `ImageDups\bin\Release\ImageDups.exe`.
 
-The application stores its logs under `%LOCALAPPDATA%\ImageDups\Logs` and its
+The application stores its logs under `%TEMP%\ImageDups` and its
 master-image index cache in the selected master folder.
