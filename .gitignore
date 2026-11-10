@@ -1,0 +1,19 @@
+# Visual Studio
+.vs/
+.vscode/settings.json
+
+# Build output
+**/bin/
+**/obj/
+
+# Restored NuGet packages
+/packages/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ImageDups index cache
+.imagedups-index.cache
