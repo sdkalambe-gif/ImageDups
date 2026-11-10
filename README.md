@@ -31,6 +31,8 @@ master-image index cache in the selected master folder.
 
 Every push to `main` builds the Release configuration and updates the rolling
 prerelease at [GitHub Releases](https://github.com/sdkalambe-gif/ImageDups/releases/tag/latest).
+The application, file, and MSI versions are set to `1.0.<GitHub run number>` for
+each build; the application logs its version when it starts.
 Download `ImageDups.msi` for a per-user installation under
 `%LOCALAPPDATA%\Programs\ImageDups` with a Start Menu shortcut. The MSI does not
 require administrator approval. Alternatively, download `ImageDups.zip` and

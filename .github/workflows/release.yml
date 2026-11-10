@@ -17,6 +17,8 @@ jobs:
   release:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-2022
+    env:
+      APPLICATION_VERSION: 1.0.${{ github.run_number }}
 
     steps:
       - name: Check out source
@@ -42,7 +44,8 @@ jobs:
         run: nuget restore ImageDups\packages.config -PackagesDirectory packages -NonInteractive
 
       - name: Build Release
-        run: msbuild ImageDups\ImageDups.csproj /t:Build /p:Configuration=Release /p:Platform=AnyCPU /m /verbosity:minimal
+        shell: pwsh
+        run: msbuild ImageDups\ImageDups.csproj /t:Build /p:Configuration=Release /p:Platform=AnyCPU "/p:ApplicationVersion=$env:APPLICATION_VERSION" /m /verbosity:minimal
 
       - name: Package application and build MSI
         shell: pwsh
@@ -66,7 +69,7 @@ jobs:
           wix build Installer\ImageDups.wxs `
             -arch x64 `
             -d "PublishDir=$outputDirectory" `
-            -d "ProductVersion=1.0.$env:GITHUB_RUN_NUMBER" `
+            -d "ProductVersion=$env:APPLICATION_VERSION" `
             -o $installerPath
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path $installerPath -PathType Leaf)) {
             throw 'Failed to build the MSI installer.'

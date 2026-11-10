@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -69,7 +70,12 @@ namespace ImageDups
             }
 
             UpdateThresholdControlState();
-            Logger.Info("Application started.");
+            string applicationVersion = Assembly.GetExecutingAssembly()
+                .GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false)
+                .Cast<AssemblyInformationalVersionAttribute>()
+                .Single()
+                .InformationalVersion;
+            Logger.Info("Application started. Version: " + applicationVersion + ".");
         }
 
         private void ChooseMasterFolder_Click(object sender, RoutedEventArgs e)
