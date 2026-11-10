@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="ImageDups"
+    Manufacturer="ImageDups"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="BA0A0932-5682-4BBD-9667-4C310BA929D3"
+    Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ImageDups is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ImageDups" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="ImageDups" />
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="ApplicationFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ApplicationFiles">
+      <Component Id="ApplicationExecutable" Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\ImageDups.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="ApplicationConfiguration" Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\ImageDups.exe.config" KeyPath="yes" />
+      </Component>
+      <Component Id="Log4NetDependency" Directory="INSTALLFOLDER" Guid="*">
+        <File Source="$(var.PublishDir)\log4net.dll" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="ImageDups"
+          Target="[INSTALLFOLDER]ImageDups.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\ImageDups"
+          Name="Installed"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

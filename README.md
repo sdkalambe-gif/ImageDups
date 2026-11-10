@@ -31,6 +31,9 @@ master-image index cache in the selected master folder.
 
 Every push to `main` builds the Release configuration and updates the rolling
 prerelease at [GitHub Releases](https://github.com/sdkalambe-gif/ImageDups/releases/tag/latest).
-Download `ImageDups.zip` and extract it before running `ImageDups.exe`. The
-archive includes the application and its required `log4net.dll` dependency.
-You can also run the workflow manually from the Actions tab.
+Download `ImageDups.msi` for a per-user installation under
+`%LOCALAPPDATA%\Programs\ImageDups` with a Start Menu shortcut. The MSI does not
+require administrator approval. Alternatively, download `ImageDups.zip` and
+extract it before running `ImageDups.exe`; the archive includes the required
+`log4net.dll` dependency. You can also run the workflow manually from the
+Actions tab.
