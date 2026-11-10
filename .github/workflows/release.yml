@@ -1,0 +1,79 @@
+name: Release build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore ImageDups\packages.config -PackagesDirectory packages -NonInteractive
+
+      - name: Build Release
+        run: msbuild ImageDups\ImageDups.csproj /t:Build /p:Configuration=Release /p:Platform=AnyCPU /m /verbosity:minimal
+
+      - name: Package application
+        shell: pwsh
+        run: |
+          $outputDirectory = Join-Path $env:GITHUB_WORKSPACE 'ImageDups\bin\Release'
+          $packageDirectory = Join-Path $env:RUNNER_TEMP 'ImageDups'
+          $archivePath = Join-Path $env:RUNNER_TEMP 'ImageDups.zip'
+          $requiredFiles = @('ImageDups.exe', 'ImageDups.exe.config', 'log4net.dll')
+
+          New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+          foreach ($file in $requiredFiles) {
+            $sourcePath = Join-Path $outputDirectory $file
+            if (-not (Test-Path $sourcePath -PathType Leaf)) {
+              throw "Required release file not found: $sourcePath"
+            }
+            Copy-Item -Path $sourcePath -Destination $packageDirectory
+          }
+
+          Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath $archivePath -CompressionLevel Optimal
+
+      - name: Replace rolling GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/latest" 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete latest --cleanup-tag --yes
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to remove the previous rolling release.'
+            }
+          }
+          elseif (($release | Out-String) -notmatch 'HTTP 404') {
+            throw "Could not check the existing rolling release: $release"
+          }
+
+          gh release create latest "$env:RUNNER_TEMP\ImageDups.zip" `
+            --title 'Latest main build' `
+            --notes "Automated Release build from commit $env:GITHUB_SHA." `
+            --target $env:GITHUB_SHA `
+            --prerelease
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to publish the rolling GitHub Release.'
+          }

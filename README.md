@@ -26,3 +26,11 @@ The executable is written to `ImageDups\bin\Release\ImageDups.exe`.
 
 The application stores its logs under `%TEMP%\ImageDups` and its
 master-image index cache in the selected master folder.
+
+## Download the latest build
+
+Every push to `main` builds the Release configuration and updates the rolling
+prerelease at [GitHub Releases](https://github.com/sdkalambe-gif/ImageDups/releases/tag/latest).
+Download `ImageDups.zip` and extract it before running `ImageDups.exe`. The
+archive includes the application and its required `log4net.dll` dependency.
+You can also run the workflow manually from the Actions tab.
