@@ -33,7 +33,8 @@ namespace ImageDups
         private const int MinimumPerceptualSimilarity = 90;
         private const int MaximumPerceptualSimilarity = 100;
         private const int EtaAverageUpdateInterval = 30;
-        private const string MasterIndexCacheFileName = ".imagedups-index.cache";
+        private const string ComparingImagesStage = "Comparing SHA-256, byte content and pHash";
+        private const string IndexCacheFileName = ".imagedups-index-v2.cache";
         private static readonly ILog Logger = LogManager.GetLogger(typeof(MainWindow));
         private static readonly double[,] DctCosines = CreateDctCosines();
 
@@ -42,8 +43,10 @@ namespace ImageDups
         private bool isIndexing;
         private bool isIndexingPaused;
         private int masterImagesAddedToCache;
+        private int currentImagesAddedToCache;
         private int nextEtaAverageUpdate = EtaAverageUpdateInterval;
         private double? etaAverageSecondsPerImage;
+        private string etaEstimateStage;
         private readonly ManualResetEventSlim indexingPause = new ManualResetEventSlim(true);
         private int byteSimilarityThreshold = 96;
         private int perceptualSimilarityThreshold = 100;
@@ -60,7 +63,6 @@ namespace ImageDups
             if (Directory.Exists(savedMasterFolder))
             {
                 MasterFolderTextBox.Text = savedMasterFolder;
-                UpdateCacheStatus();
             }
 
             string savedCurrentFolder = Properties.Settings.Default.CurrentFolderPath;
@@ -69,6 +71,7 @@ namespace ImageDups
                 CurrentFolderTextBox.Text = savedCurrentFolder;
             }
 
+            UpdateCacheStatus();
             UpdateThresholdControlState();
             string applicationVersion = Assembly.GetExecutingAssembly()
                 .GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false)
@@ -89,6 +92,7 @@ namespace ImageDups
                 Properties.Settings.Default.MasterFolderPath = folder;
                 Properties.Settings.Default.Save();
                 masterImagesAddedToCache = 0;
+                currentImagesAddedToCache = 0;
                 UpdateCacheStatus();
                 Logger.Info("Master folder selected: " + folder);
                 ClearResults();
@@ -105,6 +109,8 @@ namespace ImageDups
                 CurrentFolderTextBox.Text = folder;
                 Properties.Settings.Default.CurrentFolderPath = folder;
                 Properties.Settings.Default.Save();
+                currentImagesAddedToCache = 0;
+                UpdateCacheStatus();
                 Logger.Info("Current-images folder selected: " + folder);
                 ClearResults();
             }
@@ -241,6 +247,7 @@ namespace ImageDups
             IndexingEtaTextBlock.Visibility = Visibility.Collapsed;
             IndexingEtaTextBlock.Text = string.Empty;
             masterImagesAddedToCache = 0;
+            currentImagesAddedToCache = 0;
             UpdateCacheStatus();
             Logger.Info("Comparison started. Master: " + masterRoot
                 + "; current: " + currentRoot
@@ -265,8 +272,10 @@ namespace ImageDups
                 }
 
                 ResultsCountTextBlock.Text = foundMatches.Count + (foundMatches.Count == 1 ? " match" : " matches");
-                string indexSummary = " Master index: " + foundMatches.CachedMasterImages
-                    + " read from cache, " + foundMatches.ProcessedMasterImages + " processed; "
+                string indexSummary = " Master cache: " + foundMatches.CachedMasterImages
+                    + " hits, " + foundMatches.ProcessedMasterImages + " processed; current cache: "
+                    + foundMatches.CachedCurrentImages + " hits, "
+                    + foundMatches.ProcessedCurrentImages + " processed; "
                     + foundMatches.CacheFilesRead + " cache file(s) searched.";
                 StatusTextBlock.Text = foundMatches.Count == 0
                     ? "Comparison complete. No images met both similarity thresholds." + indexSummary
@@ -274,7 +283,9 @@ namespace ImageDups
                 UpdateCacheFileList(foundMatches.CacheFilePaths);
                 Logger.Info("Comparison completed. Matches: " + foundMatches.Count
                     + "; master images read from cache: " + foundMatches.CachedMasterImages
-                    + "; master images processed: " + foundMatches.ProcessedMasterImages + ".");
+                    + "; master images processed: " + foundMatches.ProcessedMasterImages
+                    + "; current images read from cache: " + foundMatches.CachedCurrentImages
+                    + "; current images processed: " + foundMatches.ProcessedCurrentImages + ".");
                 ProgressBar.Value = 100;
                 DeleteButton.IsEnabled = foundMatches.Count > 0;
             }
@@ -313,14 +324,27 @@ namespace ImageDups
             int total = masterFiles.Count + currentFiles.Count;
             int completed = 0;
             int cachedMasterImages = 0;
-            string cachePath = Path.Combine(masterRoot, MasterIndexCacheFileName);
-            List<string> cachePaths;
-            Dictionary<string, MasterImage> cachedImages = ReadMasterIndexCache(masterRoot, out cachePaths);
-            int masterImagesToProcess = masterFiles.Count(path => !IsMasterImageCached(path, cachedImages));
+            string masterCachePath = Path.Combine(masterRoot, IndexCacheFileName);
+            string currentCachePath = Path.Combine(currentRoot, IndexCacheFileName);
+            List<string> masterCachePaths;
+            List<string> currentCachePaths;
+            Dictionary<string, IndexedImage> cachedMasterImagesByPath =
+                ReadIndexCache(masterRoot, out masterCachePaths);
+            Dictionary<string, IndexedImage> cachedCurrentImagesByPath =
+                ReadIndexCache(currentRoot, out currentCachePaths);
+            var cachePaths = masterCachePaths.Concat(currentCachePaths).ToList();
+            int masterImagesToProcess = masterFiles.Count(
+                path => !IsImageCached(path, cachedMasterImagesByPath));
             int processedMasterImages = 0;
+            int cachedCurrentImages = 0;
+            int processedCurrentImages = 0;
+            int comparisonImagesCompleted = 0;
+            TimeSpan comparisonImageProcessingTime = TimeSpan.Zero;
             TimeSpan imageProcessingTime = TimeSpan.Zero;
             Logger.Info("Scan discovered " + masterFiles.Count + " master and "
-                + currentFiles.Count + " current images. Loaded " + cachedImages.Count + " cache records from "
+                + currentFiles.Count + " current images. Loaded "
+                + cachedMasterImagesByPath.Count + " master and "
+                + cachedCurrentImagesByPath.Count + " current cache records from "
                 + cachePaths.Count + " cache file(s): " + string.Join("; ", cachePaths));
             progress.Report(new ScanProgress(
                 completed,
@@ -328,24 +352,29 @@ namespace ImageDups
                 "Indexing master images",
                 cachedMasterImages,
                 processedMasterImages,
+                cachedCurrentImages,
+                processedCurrentImages,
                 cachePaths,
                 processedMasterImages,
                 masterImagesToProcess,
-                imageProcessingTime));
+                imageProcessingTime,
+                comparisonImagesCompleted,
+                currentFiles.Count,
+                comparisonImageProcessingTime));
 
-            var masterHashes = new Dictionary<string, MasterImage>(StringComparer.Ordinal);
-            var masterPerceptualHashes = new List<MasterImage>();
+            var masterHashes = new Dictionary<string, IndexedImage>(StringComparer.Ordinal);
+            var masterPerceptualHashes = new List<IndexedImage>();
             foreach (string path in masterFiles)
             {
                 indexingPause.Wait();
                 var fileInfo = new FileInfo(path);
-                MasterImage cachedImage;
-                MasterImage masterImage;
-                if (cachedImages.TryGetValue(Path.GetFullPath(path), out cachedImage)
+                IndexedImage cachedImage;
+                IndexedImage masterImage;
+                if (cachedMasterImagesByPath.TryGetValue(Path.GetFullPath(path), out cachedImage)
                     && cachedImage.FileLength == fileInfo.Length
                     && cachedImage.LastWriteTimeUtcTicks == fileInfo.LastWriteTimeUtc.Ticks)
                 {
-                    masterImage = new MasterImage(
+                    masterImage = new IndexedImage(
                         path,
                         cachedImage.ContentHash,
                         cachedImage.PerceptualHash,
@@ -360,13 +389,13 @@ namespace ImageDups
                     Stopwatch imageProcessingStopwatch = Stopwatch.StartNew();
                     string hash = GetFileHash(path);
                     ulong perceptualHash = GetPerceptualHash(path);
-                    masterImage = new MasterImage(
+                    masterImage = new IndexedImage(
                         path,
                         hash,
                         perceptualHash,
                         fileInfo.Length,
                         fileInfo.LastWriteTimeUtc.Ticks);
-                    AppendMasterIndexCache(cachePath, masterImage);
+                    AppendIndexCache(masterCachePath, masterImage);
                     imageProcessingStopwatch.Stop();
                     imageProcessingTime += imageProcessingStopwatch.Elapsed;
                     processedMasterImages++;
@@ -386,10 +415,15 @@ namespace ImageDups
                     "Indexing master images",
                     cachedMasterImages,
                     processedMasterImages,
+                    cachedCurrentImages,
+                    processedCurrentImages,
                     cachePaths,
                     processedMasterImages,
                     masterImagesToProcess,
-                    imageProcessingTime));
+                    imageProcessingTime,
+                    comparisonImagesCompleted,
+                    currentFiles.Count,
+                    comparisonImageProcessingTime));
             }
 
             Logger.Info("Master indexing finished. Cache hits: " + cachedMasterImages
@@ -397,9 +431,40 @@ namespace ImageDups
             var matches = new List<ImageMatch>();
             foreach (string currentPath in currentFiles)
             {
-                string hash = GetFileHash(currentPath);
-                MasterImage exactMaster;
-                if (masterHashes.TryGetValue(hash, out exactMaster)
+                Stopwatch comparisonStopwatch = Stopwatch.StartNew();
+                var currentFileInfo = new FileInfo(currentPath);
+                IndexedImage cachedCurrentImage;
+                IndexedImage currentImage;
+                if (cachedCurrentImagesByPath.TryGetValue(Path.GetFullPath(currentPath), out cachedCurrentImage)
+                    && cachedCurrentImage.FileLength == currentFileInfo.Length
+                    && cachedCurrentImage.LastWriteTimeUtcTicks == currentFileInfo.LastWriteTimeUtc.Ticks)
+                {
+                    currentImage = new IndexedImage(
+                        currentPath,
+                        cachedCurrentImage.ContentHash,
+                        cachedCurrentImage.PerceptualHash,
+                        currentFileInfo.Length,
+                        currentFileInfo.LastWriteTimeUtc.Ticks);
+                    cachedCurrentImages++;
+                }
+                else
+                {
+                    Logger.Info("Processing current image: " + currentPath
+                        + (cachedCurrentImage == null ? " (not cached)." : " (cache entry stale)."));
+                    string hash = GetFileHash(currentPath);
+                    ulong perceptualHash = GetPerceptualHash(currentPath);
+                    currentImage = new IndexedImage(
+                        currentPath,
+                        hash,
+                        perceptualHash,
+                        currentFileInfo.Length,
+                        currentFileInfo.LastWriteTimeUtc.Ticks);
+                    AppendIndexCache(currentCachePath, currentImage);
+                    processedCurrentImages++;
+                }
+
+                IndexedImage exactMaster;
+                if (masterHashes.TryGetValue(currentImage.ContentHash, out exactMaster)
                     && FilesAreIdentical(exactMaster.Path, currentPath))
                 {
                     matches.Add(new ImageMatch(
@@ -413,15 +478,14 @@ namespace ImageDups
                 }
                 else
                 {
-                    ulong perceptualHash = GetPerceptualHash(currentPath);
-                    MasterImage bestMaster = null;
+                    IndexedImage bestMaster = null;
                     int bestPerceptualSimilarity = -1;
                     double bestByteSimilarity = -1;
-                    long currentLength = new FileInfo(currentPath).Length;
-                    foreach (MasterImage candidate in masterPerceptualHashes)
+                    long currentLength = currentFileInfo.Length;
+                    foreach (IndexedImage candidate in masterPerceptualHashes)
                     {
                         int perceptualSimilarity =
-                            GetPerceptualHashSimilarity(candidate.PerceptualHash, perceptualHash);
+                            GetPerceptualHashSimilarity(candidate.PerceptualHash, currentImage.PerceptualHash);
                         if (perceptualSimilarity < perceptualThreshold)
                         {
                             continue;
@@ -457,29 +521,43 @@ namespace ImageDups
                     }
                 }
 
+                comparisonStopwatch.Stop();
+                comparisonImagesCompleted++;
+                comparisonImageProcessingTime += comparisonStopwatch.Elapsed;
                 completed++;
                 progress.Report(new ScanProgress(
                     completed,
                     total,
-                    "Comparing SHA-256, byte content and pHash",
+                    ComparingImagesStage,
                     cachedMasterImages,
                     processedMasterImages,
+                    cachedCurrentImages,
+                    processedCurrentImages,
                     cachePaths,
                     processedMasterImages,
                     masterImagesToProcess,
-                    imageProcessingTime));
+                    imageProcessingTime,
+                    comparisonImagesCompleted,
+                    currentFiles.Count,
+                    comparisonImageProcessingTime));
             }
 
-            return new MatchScanResult(matches, cachedMasterImages, processedMasterImages, cachePaths);
+            return new MatchScanResult(
+                matches,
+                cachedMasterImages,
+                processedMasterImages,
+                cachedCurrentImages,
+                processedCurrentImages,
+                cachePaths);
         }
 
-        private static Dictionary<string, MasterImage> ReadMasterIndexCache(
-            string masterRoot,
+        private static Dictionary<string, IndexedImage> ReadIndexCache(
+            string root,
             out List<string> cachePaths)
         {
-            var cachedImages = new Dictionary<string, MasterImage>(StringComparer.OrdinalIgnoreCase);
+            var cachedImages = new Dictionary<string, IndexedImage>(StringComparer.OrdinalIgnoreCase);
             cachePaths = Directory
-                .EnumerateFiles(masterRoot, MasterIndexCacheFileName, System.IO.SearchOption.AllDirectories)
+                .EnumerateFiles(root, IndexCacheFileName, System.IO.SearchOption.AllDirectories)
                 .ToList();
             foreach (string cachePath in cachePaths)
             {
@@ -502,7 +580,7 @@ namespace ImageDups
                             continue;
                         }
 
-                        cachedImages[Path.GetFullPath(path)] = new MasterImage(
+                        cachedImages[Path.GetFullPath(path)] = new IndexedImage(
                             path,
                             fields[3],
                             perceptualHash,
@@ -527,9 +605,9 @@ namespace ImageDups
             return cachedImages;
         }
 
-        private static bool IsMasterImageCached(string path, IDictionary<string, MasterImage> cachedImages)
+        private static bool IsImageCached(string path, IDictionary<string, IndexedImage> cachedImages)
         {
-            MasterImage cachedImage;
+            IndexedImage cachedImage;
             if (!cachedImages.TryGetValue(Path.GetFullPath(path), out cachedImage))
             {
                 return false;
@@ -540,7 +618,7 @@ namespace ImageDups
                 && cachedImage.LastWriteTimeUtcTicks == fileInfo.LastWriteTimeUtc.Ticks;
         }
 
-        private static void AppendMasterIndexCache(string cachePath, MasterImage image)
+        private static void AppendIndexCache(string cachePath, IndexedImage image)
         {
             string record = Convert.ToBase64String(Encoding.UTF8.GetBytes(Path.GetFullPath(image.Path)))
                 + "|" + image.FileLength.ToString(CultureInfo.InvariantCulture)
@@ -553,6 +631,75 @@ namespace ImageDups
             {
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush(true);
+            }
+        }
+
+        private static void RemoveIndexCacheEntry(string root, string imagePath)
+        {
+            string fullImagePath = Path.GetFullPath(imagePath);
+            List<string> cachePaths = Directory
+                .EnumerateFiles(root, IndexCacheFileName, System.IO.SearchOption.AllDirectories)
+                .ToList();
+            foreach (string cachePath in cachePaths)
+            {
+                List<string> lines = File.ReadAllLines(cachePath).ToList();
+                List<string> retainedLines = lines
+                    .Where(line => !IsCacheEntryForPath(line, fullImagePath))
+                    .ToList();
+                if (retainedLines.Count == lines.Count)
+                {
+                    continue;
+                }
+
+                if (retainedLines.Count == 0)
+                {
+                    File.Delete(cachePath);
+                    continue;
+                }
+
+                string temporaryPath = cachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    File.WriteAllLines(temporaryPath, retainedLines, new UTF8Encoding(false));
+                    File.Replace(temporaryPath, cachePath, null);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryPath))
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                }
+            }
+        }
+
+        private static bool IsCacheEntryForPath(string line, string fullImagePath)
+        {
+            string[] fields = line.Split('|');
+            if (fields.Length != 5)
+            {
+                return false;
+            }
+
+            try
+            {
+                string cachedPath = Encoding.UTF8.GetString(Convert.FromBase64String(fields[0]));
+                return string.Equals(
+                    Path.GetFullPath(cachedPath),
+                    fullImagePath,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+            catch (NotSupportedException)
+            {
+                return false;
             }
         }
 
@@ -575,19 +722,34 @@ namespace ImageDups
 
         private static ulong GetPerceptualHash(string path)
         {
-            BitmapDecoder decoder = BitmapDecoder.Create(
-                new Uri(Path.GetFullPath(path)),
-                BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
-            BitmapFrame frame = decoder.Frames[0];
-            var grayscale = new FormatConvertedBitmap(frame, System.Windows.Media.PixelFormats.Gray8, null, 0);
-            var scaled = new TransformedBitmap(
-                grayscale,
-                new System.Windows.Media.ScaleTransform(
-                    (double)PerceptualHashSize / grayscale.PixelWidth,
-                    (double)PerceptualHashSize / grayscale.PixelHeight));
+            try
+            {
+                return ComputePerceptualHash(path);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Could not calculate perceptual hash for image: " + path, ex);
+                throw;
+            }
+        }
+
+        private static ulong ComputePerceptualHash(string path)
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.UriSource = new Uri(Path.GetFullPath(path));
+            image.DecodePixelWidth = PerceptualHashSize;
+            image.DecodePixelHeight = PerceptualHashSize;
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.EndInit();
+
+            var grayscale = new FormatConvertedBitmap(
+                image,
+                System.Windows.Media.PixelFormats.Gray8,
+                null,
+                0);
             byte[] pixels = new byte[PerceptualHashSize * PerceptualHashSize];
-            scaled.CopyPixels(pixels, PerceptualHashSize, 0);
+            grayscale.CopyPixels(pixels, PerceptualHashSize, 0);
 
             var coefficients = new double[LowFrequencySize, LowFrequencySize];
             var acCoefficients = new double[PerceptualHashBitCount - 1];
@@ -784,13 +946,15 @@ namespace ImageDups
         {
             isIndexing = progress.Stage == "Indexing master images";
             PauseIndexingButton.IsEnabled = isComparing && isIndexing;
-            if (isIndexing)
+            bool isEstimating = isIndexing || progress.Stage == ComparingImagesStage;
+            if (isEstimating)
             {
                 IndexingEtaTextBlock.Visibility = Visibility.Visible;
                 UpdateEtaEstimate(
-                    progress.ProcessingImagesCompleted,
-                    progress.ProcessingImagesTotal,
-                    progress.ImageProcessingTime);
+                    progress.Stage,
+                    isIndexing ? progress.ProcessingImagesCompleted : progress.ComparisonImagesCompleted,
+                    isIndexing ? progress.ProcessingImagesTotal : progress.ComparisonImagesTotal,
+                    isIndexing ? progress.ImageProcessingTime : progress.ComparisonImageProcessingTime);
             }
             else
             {
@@ -801,18 +965,27 @@ namespace ImageDups
             StatusTextBlock.Text = (isIndexingPaused ? "Indexing paused. " : string.Empty)
                 + progress.Stage + ": " + progress.Completed + " of " + progress.Total
                 + " images (master cache: " + progress.CachedMasterImages + " cached, "
-                + progress.ProcessedMasterImages + " processed)";
+                + progress.ProcessedMasterImages + " processed; current cache: "
+                + progress.CachedCurrentImages + " cached, "
+                + progress.ProcessedCurrentImages + " processed)";
             StatusTextBlock.Text += "; " + progress.CacheFilesRead + " cache file(s) searched";
             masterImagesAddedToCache = progress.ProcessedMasterImages;
+            currentImagesAddedToCache = progress.ProcessedCurrentImages;
             UpdateCacheStatus();
             UpdateCacheFileList(progress.CacheFilePaths);
         }
 
-        private void UpdateEtaEstimate(int processed, int toProcess, TimeSpan processingTime)
+        private void UpdateEtaEstimate(string stage, int processed, int toProcess, TimeSpan processingTime)
         {
+            if (!string.Equals(etaEstimateStage, stage, StringComparison.Ordinal))
+            {
+                etaEstimateStage = stage;
+                nextEtaAverageUpdate = EtaAverageUpdateInterval;
+                etaAverageSecondsPerImage = null;
+            }
+
             if (processed == 0)
             {
-                nextEtaAverageUpdate = EtaAverageUpdateInterval;
                 etaAverageSecondsPerImage = null;
             }
             else if (processed >= nextEtaAverageUpdate || processed >= toProcess)
@@ -872,14 +1045,20 @@ namespace ImageDups
         private void UpdateCacheStatus()
         {
             string masterRoot = MasterFolderTextBox.Text;
-            string cachePath = string.IsNullOrWhiteSpace(masterRoot)
+            string currentRoot = CurrentFolderTextBox.Text;
+            string masterCachePath = string.IsNullOrWhiteSpace(masterRoot)
                 ? null
-                : Path.Combine(masterRoot, MasterIndexCacheFileName);
-            CacheStatusTextBlock.Text = "Added to cache this run: " + masterImagesAddedToCache
-                + (cachePath == null ? ". Cache write location: choose a master folder."
-                    : ". Cache write location: " + cachePath
-                        + ". Existing cache files under this folder and its subfolders are searched.");
-            CacheStatusTextBlock.ToolTip = cachePath;
+                : Path.Combine(masterRoot, IndexCacheFileName);
+            string currentCachePath = string.IsNullOrWhiteSpace(currentRoot)
+                ? null
+                : Path.Combine(currentRoot, IndexCacheFileName);
+            CacheStatusTextBlock.Text = "Added this run: master " + masterImagesAddedToCache
+                + ", current " + currentImagesAddedToCache + ". Master cache: "
+                + (masterCachePath ?? "choose a master folder")
+                + "; current cache: " + (currentCachePath ?? "choose a current-images folder")
+                + ". Each folder and its subfolders are searched.";
+            CacheStatusTextBlock.ToolTip = "Master: " + (masterCachePath ?? "not selected")
+                + Environment.NewLine + "Current: " + (currentCachePath ?? "not selected");
         }
 
         private void UpdateCacheFileList(IEnumerable<string> cachePaths)
@@ -950,6 +1129,7 @@ namespace ImageDups
             int recycled = 0;
             Logger.Info("Recycle operation started for " + selected.Count + " selected image(s).");
             var failures = new List<string>();
+            var cacheCleanupFailures = new List<string>();
 
             foreach (ImageMatch match in selected)
             {
@@ -992,6 +1172,15 @@ namespace ImageDups
                     Matches.Remove(match);
                     recycled++;
                     Logger.Info("Sent current image to Recycle Bin: " + fullPath);
+                    try
+                    {
+                        RemoveIndexCacheEntry(CurrentFolderTextBox.Text, fullPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        cacheCleanupFailures.Add(fullPath + ": " + ex.Message);
+                        Logger.Error("Could not remove the cache entry for recycled image " + fullPath + ".", ex);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1004,22 +1193,45 @@ namespace ImageDups
             DeleteButton.IsEnabled = Matches.Count > 0;
             StatusTextBlock.Text = recycled + (recycled == 1
                 ? " selected copy sent to the Recycle Bin."
-                : " selected copies sent to the Recycle Bin.");
+                : " selected copies sent to the Recycle Bin.")
+                + (cacheCleanupFailures.Count == 0
+                    ? string.Empty
+                    : " Cache cleanup failed for " + cacheCleanupFailures.Count + " recycled image(s).");
             Logger.Info("Recycle operation finished. Recycled: " + recycled
-                + "; failures: " + failures.Count + ".");
+                + "; recycle failures: " + failures.Count
+                + "; cache cleanup failures: " + cacheCleanupFailures.Count + ".");
 
-            if (failures.Count > 0)
+            if (failures.Count > 0 || cacheCleanupFailures.Count > 0)
             {
-                string details = string.Join("\n", failures.Take(10));
-                if (failures.Count > 10)
+                var details = new List<string>();
+                if (failures.Count > 0)
                 {
-                    details += "\n...and " + (failures.Count - 10) + " more.";
+                    details.Add("Could not recycle " + failures.Count + " image(s):");
+                    details.AddRange(failures.Take(10));
+                    if (failures.Count > 10)
+                    {
+                        details.Add("...and " + (failures.Count - 10) + " more.");
+                    }
+                }
+
+                if (cacheCleanupFailures.Count > 0)
+                {
+                    details.Add("Recycled, but could not clean up cache entries for "
+                        + cacheCleanupFailures.Count + " image(s):");
+                    details.AddRange(cacheCleanupFailures.Take(10));
+                    if (cacheCleanupFailures.Count > 10)
+                    {
+                        details.Add("...and " + (cacheCleanupFailures.Count - 10) + " more.");
+                    }
                 }
 
                 MessageBox.Show(this,
-                    recycled + " image(s) sent to the Recycle Bin.\n\nCould not recycle " + failures.Count +
-                    " image(s):\n" + details,
-                    "Some files could not be recycled", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    recycled + " image(s) sent to the Recycle Bin.\n\n" + string.Join("\n", details),
+                    cacheCleanupFailures.Count > 0 && failures.Count == 0
+                        ? "Cache cleanup warning"
+                        : "Recycle operation warning",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
             }
         }
 
@@ -1057,7 +1269,7 @@ namespace ImageDups
         }
     }
 
-    internal sealed class MasterImage
+    internal sealed class IndexedImage
     {
         public string Path { get; private set; }
         public string ContentHash { get; private set; }
@@ -1065,36 +1277,42 @@ namespace ImageDups
         public long FileLength { get; private set; }
         public long LastWriteTimeUtcTicks { get; private set; }
 
-    public MasterImage(
-        string path,
-        string contentHash,
-        ulong perceptualHash,
-        long fileLength,
-        long lastWriteTimeUtcTicks)
-    {
-        Path = path;
-        ContentHash = contentHash;
-        PerceptualHash = perceptualHash;
-        FileLength = fileLength;
-        LastWriteTimeUtcTicks = lastWriteTimeUtcTicks;
-    }
+        public IndexedImage(
+            string path,
+            string contentHash,
+            ulong perceptualHash,
+            long fileLength,
+            long lastWriteTimeUtcTicks)
+        {
+            Path = path;
+            ContentHash = contentHash;
+            PerceptualHash = perceptualHash;
+            FileLength = fileLength;
+            LastWriteTimeUtcTicks = lastWriteTimeUtcTicks;
+        }
     }
 
     internal sealed class MatchScanResult : List<ImageMatch>
     {
         public int CachedMasterImages { get; private set; }
         public int ProcessedMasterImages { get; private set; }
+        public int CachedCurrentImages { get; private set; }
+        public int ProcessedCurrentImages { get; private set; }
         public List<string> CacheFilePaths { get; private set; }
         public int CacheFilesRead { get { return CacheFilePaths.Count; } }
         public MatchScanResult(
             IEnumerable<ImageMatch> matches,
             int cachedMasterImages,
             int processedMasterImages,
+            int cachedCurrentImages,
+            int processedCurrentImages,
             IEnumerable<string> cacheFilePaths)
             : base(matches)
         {
             CachedMasterImages = cachedMasterImages;
             ProcessedMasterImages = processedMasterImages;
+            CachedCurrentImages = cachedCurrentImages;
+            ProcessedCurrentImages = processedCurrentImages;
             CacheFilePaths = cacheFilePaths.ToList();
         }
     }
@@ -1200,11 +1418,16 @@ namespace ImageDups
         public string Stage { get; private set; }
         public int CachedMasterImages { get; private set; }
         public int ProcessedMasterImages { get; private set; }
+        public int CachedCurrentImages { get; private set; }
+        public int ProcessedCurrentImages { get; private set; }
         public List<string> CacheFilePaths { get; private set; }
         public int CacheFilesRead { get { return CacheFilePaths.Count; } }
         public int ProcessingImagesCompleted { get; private set; }
         public int ProcessingImagesTotal { get; private set; }
         public TimeSpan ImageProcessingTime { get; private set; }
+        public int ComparisonImagesCompleted { get; private set; }
+        public int ComparisonImagesTotal { get; private set; }
+        public TimeSpan ComparisonImageProcessingTime { get; private set; }
 
         public ScanProgress(
             int completed,
@@ -1212,20 +1435,30 @@ namespace ImageDups
             string stage,
             int cachedMasterImages,
             int processedMasterImages,
+            int cachedCurrentImages,
+            int processedCurrentImages,
             IEnumerable<string> cacheFilePaths,
             int processingImagesCompleted,
             int processingImagesTotal,
-            TimeSpan imageProcessingTime)
+            TimeSpan imageProcessingTime,
+            int comparisonImagesCompleted,
+            int comparisonImagesTotal,
+            TimeSpan comparisonImageProcessingTime)
         {
             Completed = completed;
             Total = total;
             Stage = stage;
             CachedMasterImages = cachedMasterImages;
             ProcessedMasterImages = processedMasterImages;
+            CachedCurrentImages = cachedCurrentImages;
+            ProcessedCurrentImages = processedCurrentImages;
             CacheFilePaths = cacheFilePaths.ToList();
             ProcessingImagesCompleted = processingImagesCompleted;
             ProcessingImagesTotal = processingImagesTotal;
             ImageProcessingTime = imageProcessingTime;
+            ComparisonImagesCompleted = comparisonImagesCompleted;
+            ComparisonImagesTotal = comparisonImagesTotal;
+            ComparisonImageProcessingTime = comparisonImageProcessingTime;
         }
     }
 }

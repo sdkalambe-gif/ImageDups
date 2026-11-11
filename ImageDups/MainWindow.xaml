@@ -76,6 +76,7 @@
                         Click="ChooseMasterFolder_Click" />
                 <Button x:Name="CompareButton" Grid.Row="0" Grid.Column="3"
                         Content="Start comparison" Click="Compare_Click"
+                        ToolTip="Compare file-byte similarity and pHash with separate thresholds, review both scores, and safely send selected current-folder copies to the Recycle Bin."
                         Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0" />
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Current images" VerticalAlignment="Center"
@@ -132,7 +133,7 @@
                 </Grid>
 
                 <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="4"
-                           Text="Master image hashes are cached in the selected master folder; changed images are reprocessed. A match must meet both thresholds."
+                           Text="Master and current image hashes are cached in their selected folders; changed images are reprocessed and recycled current images are removed from the cache. A match must meet both thresholds."
                            Foreground="#667085" FontSize="11" TextWrapping="Wrap" />
             </Grid>
         </Border>
@@ -172,7 +173,7 @@
                           Width="10" Height="12" Stretch="Uniform" Fill="#344054" />
                 </Button>
                 <TextBlock x:Name="CacheStatusTextBlock" Grid.Row="2" Grid.ColumnSpan="3"
-                           Text="Cache file: choose a master folder."
+                           Text="Cache files: choose both folders."
                            Foreground="#667085" FontSize="11" TextWrapping="Wrap" />
                 <ScrollViewer x:Name="CacheFilesScrollViewer" Grid.Row="4" Grid.ColumnSpan="3"
                               MaxHeight="76" VerticalScrollBarVisibility="Auto"
@@ -265,9 +266,5 @@
                 </ListBox>
             </Grid>
         </Border>
-
-        <TextBlock Grid.Row="3"
-                   Text="Compare file-byte similarity and pHash with separate thresholds, review both scores, and safely send selected current-folder copies to the Recycle Bin."
-                   Margin="0,6,0,0" FontSize="14" Foreground="#667085" TextWrapping="Wrap" />
     </Grid>
 </Window>
