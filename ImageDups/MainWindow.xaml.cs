@@ -32,7 +32,7 @@ namespace ImageDups
         private const int PerceptualHashBitCount = LowFrequencySize * LowFrequencySize;
         private const int MinimumPerceptualSimilarity = 90;
         private const int MaximumPerceptualSimilarity = 100;
-        private const int EtaAverageUpdateInterval = 30;
+        private const int EtaAverageUpdateInterval = 5;
         private const string ComparingImagesStage = "Comparing SHA-256, byte content and pHash";
         private const string IndexCacheFileName = ".imagedups-index-v2.cache";
         private static readonly ILog Logger = LogManager.GetLogger(typeof(MainWindow));
