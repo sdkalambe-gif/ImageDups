@@ -16,6 +16,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using WinForms = System.Windows.Forms;
 
@@ -42,8 +43,6 @@ namespace ImageDups
         private bool isComparing;
         private bool isIndexing;
         private bool isIndexingPaused;
-        private int masterImagesAddedToCache;
-        private int currentImagesAddedToCache;
         private int nextEtaAverageUpdate = EtaAverageUpdateInterval;
         private double? etaAverageSecondsPerImage;
         private string etaEstimateStage;
@@ -91,8 +90,7 @@ namespace ImageDups
                 MasterFolderTextBox.Text = folder;
                 Properties.Settings.Default.MasterFolderPath = folder;
                 Properties.Settings.Default.Save();
-                masterImagesAddedToCache = 0;
-                currentImagesAddedToCache = 0;
+                ResetImageCounts();
                 UpdateCacheStatus();
                 Logger.Info("Master folder selected: " + folder);
                 ClearResults();
@@ -109,7 +107,7 @@ namespace ImageDups
                 CurrentFolderTextBox.Text = folder;
                 Properties.Settings.Default.CurrentFolderPath = folder;
                 Properties.Settings.Default.Save();
-                currentImagesAddedToCache = 0;
+                ResetImageCounts();
                 UpdateCacheStatus();
                 Logger.Info("Current-images folder selected: " + folder);
                 ClearResults();
@@ -246,8 +244,7 @@ namespace ImageDups
             StatusTextBlock.Text = "Preparing image scan...";
             IndexingEtaTextBlock.Visibility = Visibility.Collapsed;
             IndexingEtaTextBlock.Text = string.Empty;
-            masterImagesAddedToCache = 0;
-            currentImagesAddedToCache = 0;
+            ResetImageCounts();
             UpdateCacheStatus();
             Logger.Info("Comparison started. Master: " + masterRoot
                 + "; current: " + currentRoot
@@ -272,19 +269,23 @@ namespace ImageDups
                 }
 
                 ResultsCountTextBlock.Text = foundMatches.Count + (foundMatches.Count == 1 ? " match" : " matches");
-                string indexSummary = " Master cache: " + foundMatches.CachedMasterImages
-                    + " hits, " + foundMatches.ProcessedMasterImages + " processed; current cache: "
-                    + foundMatches.CachedCurrentImages + " hits, "
-                    + foundMatches.ProcessedCurrentImages + " processed; "
-                    + foundMatches.CacheFilesRead + " cache file(s) searched.";
+                SetImageCount(
+                    MasterImageCountTextBlock,
+                    foundMatches.MasterImagesTotal,
+                    foundMatches.CachedMasterImages,
+                    foundMatches.ProcessedMasterImages);
+                SetImageCount(
+                    CurrentImageCountTextBlock,
+                    foundMatches.CurrentImagesTotal,
+                    foundMatches.CachedCurrentImages,
+                    foundMatches.ProcessedCurrentImages);
                 string unsupportedImageSummary = foundMatches.UnsupportedImages == 0
                     ? string.Empty
-                    : " " + foundMatches.UnsupportedImages
-                        + " image(s) skipped because Windows could not decode them; see the log for file paths.";
+                    : " Some images could not be decoded; see the log for file paths.";
                 StatusTextBlock.Text = foundMatches.Count == 0
-                    ? "Comparison complete. No images met both similarity thresholds." + unsupportedImageSummary + indexSummary
+                    ? "Comparison complete. No images met both similarity thresholds." + unsupportedImageSummary
                     : "Comparison complete. Exact files are selected; review similarity matches before selecting them."
-                        + unsupportedImageSummary + indexSummary;
+                        + unsupportedImageSummary;
                 UpdateCacheFileList(foundMatches.CacheFilePaths);
                 Logger.Info("Comparison completed. Matches: " + foundMatches.Count
                     + "; master images read from cache: " + foundMatches.CachedMasterImages
@@ -608,7 +609,9 @@ namespace ImageDups
                 cachedCurrentImages,
                 processedCurrentImages,
                 cachePaths,
-                unsupportedImages);
+                unsupportedImages,
+                masterFiles.Count,
+                currentFiles.Count);
         }
 
         private static Dictionary<string, IndexedImage> ReadIndexCache(
@@ -1056,6 +1059,16 @@ namespace ImageDups
 
         private void UpdateProgress(ScanProgress progress)
         {
+            SetImageCount(
+                MasterImageCountTextBlock,
+                progress.Total - progress.ComparisonImagesTotal,
+                progress.CachedMasterImages,
+                progress.ProcessedMasterImages);
+            SetImageCount(
+                CurrentImageCountTextBlock,
+                progress.ComparisonImagesTotal,
+                progress.CachedCurrentImages,
+                progress.ProcessedCurrentImages);
             isIndexing = progress.Stage == "Indexing master images";
             PauseIndexingButton.IsEnabled = isComparing && isIndexing;
             bool isEstimating = isIndexing || progress.Stage == ComparingImagesStage;
@@ -1075,16 +1088,26 @@ namespace ImageDups
             }
             ProgressBar.Value = progress.Total == 0 ? 100 : progress.Completed * 100.0 / progress.Total;
             StatusTextBlock.Text = (isIndexingPaused ? "Indexing paused. " : string.Empty)
-                + progress.Stage + ": " + progress.Completed + " of " + progress.Total
-                + " images (master cache: " + progress.CachedMasterImages + " cached, "
-                + progress.ProcessedMasterImages + " processed; current cache: "
-                + progress.CachedCurrentImages + " cached, "
-                + progress.ProcessedCurrentImages + " processed)";
-            StatusTextBlock.Text += "; " + progress.CacheFilesRead + " cache file(s) searched";
-            masterImagesAddedToCache = progress.ProcessedMasterImages;
-            currentImagesAddedToCache = progress.ProcessedCurrentImages;
+                + progress.Stage;
             UpdateCacheStatus();
             UpdateCacheFileList(progress.CacheFilePaths);
+        }
+
+        private static void SetImageCount(TextBlock textBlock, int total, int cached, int processed)
+        {
+            textBlock.Text = "Total: " + total + Environment.NewLine
+                + "From cache: " + cached + " | Processed: " + processed;
+            textBlock.ToolTip = "Total images: " + total
+                + Environment.NewLine + "Read from cache: " + cached
+                + Environment.NewLine + "Processed this scan: " + processed;
+        }
+
+        private void ResetImageCounts()
+        {
+            MasterImageCountTextBlock.Text = "Not scanned";
+            MasterImageCountTextBlock.ToolTip = "Master images: total discovered, read from cache, and processed this scan.";
+            CurrentImageCountTextBlock.Text = "Not scanned";
+            CurrentImageCountTextBlock.ToolTip = "Current images: total discovered, read from cache, and processed this scan.";
         }
 
         private void UpdateEtaEstimate(string stage, int processed, int toProcess, TimeSpan processingTime)
@@ -1164,8 +1187,7 @@ namespace ImageDups
             string currentCachePath = string.IsNullOrWhiteSpace(currentRoot)
                 ? null
                 : Path.Combine(currentRoot, IndexCacheFileName);
-            CacheStatusTextBlock.Text = "Added this run: master " + masterImagesAddedToCache
-                + ", current " + currentImagesAddedToCache + ". Master cache: "
+            CacheStatusTextBlock.Text = "Master cache: "
                 + (masterCachePath ?? "choose a master folder")
                 + "; current cache: " + (currentCachePath ?? "choose a current-images folder")
                 + ". Each folder and its subfolders are searched.";
@@ -1406,6 +1428,8 @@ namespace ImageDups
 
     internal sealed class MatchScanResult : List<ImageMatch>
     {
+        public int MasterImagesTotal { get; private set; }
+        public int CurrentImagesTotal { get; private set; }
         public int CachedMasterImages { get; private set; }
         public int ProcessedMasterImages { get; private set; }
         public int CachedCurrentImages { get; private set; }
@@ -1420,9 +1444,13 @@ namespace ImageDups
             int cachedCurrentImages,
             int processedCurrentImages,
             IEnumerable<string> cacheFilePaths,
-            int unsupportedImages)
+            int unsupportedImages,
+            int masterImagesTotal,
+            int currentImagesTotal)
             : base(matches)
         {
+            MasterImagesTotal = masterImagesTotal;
+            CurrentImagesTotal = currentImagesTotal;
             CachedMasterImages = cachedMasterImages;
             ProcessedMasterImages = processedMasterImages;
             CachedCurrentImages = cachedCurrentImages;

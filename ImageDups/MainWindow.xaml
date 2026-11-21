@@ -70,8 +70,22 @@
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Master storage" VerticalAlignment="Center"
                            FontWeight="SemiBold" Foreground="#344054" Margin="0,0,14,0" />
-                <TextBox x:Name="MasterFolderTextBox" Grid.Row="0" Grid.Column="1" IsReadOnly="True"
-                         Background="#F9FAFB" />
+                <Grid Grid.Row="0" Grid.Column="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="MasterFolderTextBox" Grid.Column="0" IsReadOnly="True"
+                             Background="#F9FAFB" />
+                    <Border Grid.Column="1" Margin="8,0,0,0" Padding="8,3"
+                            Background="#F9FAFB" BorderBrush="#E2E6EF" BorderThickness="1"
+                            CornerRadius="4" VerticalAlignment="Stretch">
+                        <TextBlock x:Name="MasterImageCountTextBlock"
+                                   Text="Not scanned"
+                                   Foreground="#475467" FontSize="10" VerticalAlignment="Center"
+                                   ToolTip="Master images: total discovered, read from cache, and processed this scan." />
+                    </Border>
+                </Grid>
                 <Button x:Name="ChooseMasterFolderButton" Grid.Row="0" Grid.Column="2" Content="Choose folder..."
                         Click="ChooseMasterFolder_Click" />
                 <Button x:Name="CompareButton" Grid.Row="0" Grid.Column="3"
@@ -81,8 +95,22 @@
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Current images" VerticalAlignment="Center"
                            FontWeight="SemiBold" Foreground="#344054" Margin="0,0,14,0" />
-                <TextBox x:Name="CurrentFolderTextBox" Grid.Row="2" Grid.Column="1" IsReadOnly="True"
-                         Background="#F9FAFB" />
+                <Grid Grid.Row="2" Grid.Column="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="CurrentFolderTextBox" Grid.Column="0" IsReadOnly="True"
+                             Background="#F9FAFB" />
+                    <Border Grid.Column="1" Margin="8,0,0,0" Padding="8,3"
+                            Background="#F9FAFB" BorderBrush="#E2E6EF" BorderThickness="1"
+                            CornerRadius="4" VerticalAlignment="Stretch">
+                        <TextBlock x:Name="CurrentImageCountTextBlock"
+                                   Text="Not scanned"
+                                   Foreground="#475467" FontSize="10" VerticalAlignment="Center"
+                                   ToolTip="Current images: total discovered, read from cache, and processed this scan." />
+                    </Border>
+                </Grid>
                 <Button x:Name="ChooseCurrentFolderButton" Grid.Row="2" Grid.Column="2" Content="Choose folder..."
                         Click="ChooseCurrentFolder_Click" />
 
