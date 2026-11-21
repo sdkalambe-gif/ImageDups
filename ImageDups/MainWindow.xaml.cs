@@ -28,13 +28,18 @@ namespace ImageDups
         {
             ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".tif", ".tiff"
         };
+        private static readonly HashSet<string> VideoExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg",
+            ".mpg", ".mts", ".ogv", ".ts", ".vob", ".webm", ".wmv"
+        };
         private const int PerceptualHashSize = 32;
         private const int LowFrequencySize = 8;
         private const int PerceptualHashBitCount = LowFrequencySize * LowFrequencySize;
         private const int MinimumPerceptualSimilarity = 90;
         private const int MaximumPerceptualSimilarity = 100;
         private const int EtaAverageUpdateInterval = 5;
-        private const string ComparingImagesStage = "Comparing SHA-256, byte content and pHash";
+        private const string ComparingImagesStage = "Comparing image similarity and exact video content";
         private const string IndexCacheFileName = ".imagedups-index-v2.cache";
         private static readonly ILog Logger = LogManager.GetLogger(typeof(MainWindow));
         private static readonly double[,] DctCosines = CreateDctCosines();
@@ -83,7 +88,7 @@ namespace ImageDups
         private void ChooseMasterFolder_Click(object sender, RoutedEventArgs e)
         {
             string folder = ChooseFolder(
-                "Select the folder containing your master images.",
+                "Select the folder containing your master images and videos.",
                 MasterFolderTextBox.Text);
             if (folder != null)
             {
@@ -100,7 +105,7 @@ namespace ImageDups
         private void ChooseCurrentFolder_Click(object sender, RoutedEventArgs e)
         {
             string folder = ChooseFolder(
-                "Select the folder containing the images to compare.",
+                "Select the folder containing the images and videos to compare.",
                 CurrentFolderTextBox.Text);
             if (folder != null)
             {
@@ -109,7 +114,7 @@ namespace ImageDups
                 Properties.Settings.Default.Save();
                 ResetImageCounts();
                 UpdateCacheStatus();
-                Logger.Info("Current-images folder selected: " + folder);
+                Logger.Info("Current media folder selected: " + folder);
                 ClearResults();
             }
         }
@@ -176,14 +181,31 @@ namespace ImageDups
 
         private void UpdateThresholdControlState()
         {
+            bool compareImages = CompareImagesCheckBox.IsChecked == true;
+            ByteSimilarityThresholdPanel.Visibility = compareImages
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            PHashSimilarityThresholdPanel.Visibility = compareImages
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             DecreaseByteThresholdButton.IsEnabled =
-                !isComparing && byteSimilarityThreshold > MinimumPerceptualSimilarity;
+                !isComparing && compareImages && byteSimilarityThreshold > MinimumPerceptualSimilarity;
             IncreaseByteThresholdButton.IsEnabled =
-                !isComparing && byteSimilarityThreshold < MaximumPerceptualSimilarity;
+                !isComparing && compareImages && byteSimilarityThreshold < MaximumPerceptualSimilarity;
             DecreasePHashThresholdButton.IsEnabled =
-                !isComparing && perceptualSimilarityThreshold > MinimumPerceptualSimilarity;
+                !isComparing && compareImages && perceptualSimilarityThreshold > MinimumPerceptualSimilarity;
             IncreasePHashThresholdButton.IsEnabled =
-                !isComparing && perceptualSimilarityThreshold < MaximumPerceptualSimilarity;
+                !isComparing && compareImages && perceptualSimilarityThreshold < MaximumPerceptualSimilarity;
+        }
+
+        private void MediaTypeCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (Matches != null)
+            {
+                ClearResults();
+                StatusTextBlock.Text = "Media selection changed. Start a new comparison to refresh the results.";
+                UpdateThresholdControlState();
+            }
         }
 
         private static string ChooseFolder(string description, string initialPath)
@@ -218,12 +240,22 @@ namespace ImageDups
                 return;
             }
 
+            bool compareImages = CompareImagesCheckBox.IsChecked == true;
+            bool compareVideos = CompareVideosCheckBox.IsChecked == true;
+            if (!compareImages && !compareVideos)
+            {
+                Logger.Warn("Comparison rejected because no media types are selected.");
+                MessageBox.Show(this, "Select Images, Videos, or both before starting the comparison.",
+                    "Media types required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             if (FoldersOverlap(masterRoot, currentRoot))
             {
                 Logger.Warn("Comparison rejected because selected folders overlap. Master: "
                     + masterRoot + "; current: " + currentRoot);
                 MessageBox.Show(this, "The selected folders must not be the same or contain one another. " +
-                    "Choose separate master and current-images folders to protect your master files.",
+                    "Choose separate master and current folders to protect your master files.",
                     "Folders overlap", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -238,16 +270,20 @@ namespace ImageDups
             SetPauseButtonIcon(false);
             ChooseMasterFolderButton.IsEnabled = false;
             ChooseCurrentFolderButton.IsEnabled = false;
+            CompareImagesCheckBox.IsEnabled = false;
+            CompareVideosCheckBox.IsEnabled = false;
             UpdateThresholdControlState();
             DeleteButton.IsEnabled = false;
             ProgressBar.Value = 0;
-            StatusTextBlock.Text = "Preparing image scan...";
+            StatusTextBlock.Text = "Preparing media scan...";
             IndexingEtaTextBlock.Visibility = Visibility.Collapsed;
             IndexingEtaTextBlock.Text = string.Empty;
             ResetImageCounts();
             UpdateCacheStatus();
             Logger.Info("Comparison started. Master: " + masterRoot
                 + "; current: " + currentRoot
+                + "; compare images: " + compareImages
+                + "; compare videos: " + compareVideos
                 + "; byte threshold: " + byteSimilarityThreshold
                 + "%; pHash threshold: " + perceptualSimilarityThreshold + "%.");
 
@@ -258,6 +294,8 @@ namespace ImageDups
                     () => FindMatches(
                         masterRoot,
                         currentRoot,
+                        compareImages,
+                        compareVideos,
                         byteSimilarityThreshold,
                         perceptualSimilarityThreshold,
                         indexingPause,
@@ -283,15 +321,15 @@ namespace ImageDups
                     ? string.Empty
                     : " Some images could not be decoded; see the log for file paths.";
                 StatusTextBlock.Text = foundMatches.Count == 0
-                    ? "Comparison complete. No images met both similarity thresholds." + unsupportedImageSummary
-                    : "Comparison complete. Exact files are selected; review similarity matches before selecting them."
+                    ? "Comparison complete. No matches were found." + unsupportedImageSummary
+                    : "Comparison complete. Exact file matches are selected; review similar image matches before selecting them."
                         + unsupportedImageSummary;
                 UpdateCacheFileList(foundMatches.CacheFilePaths);
                 Logger.Info("Comparison completed. Matches: " + foundMatches.Count
-                    + "; master images read from cache: " + foundMatches.CachedMasterImages
-                    + "; master images processed: " + foundMatches.ProcessedMasterImages
-                    + "; current images read from cache: " + foundMatches.CachedCurrentImages
-                    + "; current images processed: " + foundMatches.ProcessedCurrentImages
+                    + "; master media files read from cache: " + foundMatches.CachedMasterImages
+                    + "; master media files processed: " + foundMatches.ProcessedMasterImages
+                    + "; current media files read from cache: " + foundMatches.CachedCurrentImages
+                    + "; current media files processed: " + foundMatches.ProcessedCurrentImages
                     + "; unsupported images skipped: " + foundMatches.UnsupportedImages + ".");
                 ProgressBar.Value = 100;
                 DeleteButton.IsEnabled = foundMatches.Count > 0;
@@ -314,6 +352,8 @@ namespace ImageDups
                 SetPauseButtonIcon(false);
                 ChooseMasterFolderButton.IsEnabled = true;
                 ChooseCurrentFolderButton.IsEnabled = true;
+                CompareImagesCheckBox.IsEnabled = true;
+                CompareVideosCheckBox.IsEnabled = true;
                 UpdateThresholdControlState();
             }
         }
@@ -321,13 +361,15 @@ namespace ImageDups
         private static MatchScanResult FindMatches(
             string masterRoot,
             string currentRoot,
+            bool compareImages,
+            bool compareVideos,
             int byteThreshold,
             int perceptualThreshold,
             ManualResetEventSlim indexingPause,
             IProgress<ScanProgress> progress)
         {
-            List<string> masterFiles = GetImageFiles(masterRoot);
-            List<string> currentFiles = GetImageFiles(currentRoot);
+            List<string> masterFiles = GetMediaFiles(masterRoot, compareImages, compareVideos);
+            List<string> currentFiles = GetMediaFiles(currentRoot, compareImages, compareVideos);
             int total = masterFiles.Count + currentFiles.Count;
             int completed = 0;
             int cachedMasterImages = 0;
@@ -350,14 +392,14 @@ namespace ImageDups
             TimeSpan comparisonImageProcessingTime = TimeSpan.Zero;
             TimeSpan imageProcessingTime = TimeSpan.Zero;
             Logger.Info("Scan discovered " + masterFiles.Count + " master and "
-                + currentFiles.Count + " current images. Loaded "
+                + currentFiles.Count + " current media files. Loaded "
                 + cachedMasterImagesByPath.Count + " master and "
                 + cachedCurrentImagesByPath.Count + " current cache records from "
                 + cachePaths.Count + " cache file(s): " + string.Join("; ", cachePaths));
             progress.Report(new ScanProgress(
                 completed,
                 total,
-                "Indexing master images",
+                "Indexing master files",
                 cachedMasterImages,
                 processedMasterImages,
                 cachedCurrentImages,
@@ -371,6 +413,7 @@ namespace ImageDups
                 comparisonImageProcessingTime));
 
             var masterHashes = new Dictionary<string, IndexedImage>(StringComparer.Ordinal);
+            var masterVideoHashes = new Dictionary<string, IndexedImage>(StringComparer.Ordinal);
             var masterPerceptualHashes = new List<IndexedImage>();
             foreach (string path in masterFiles)
             {
@@ -392,19 +435,19 @@ namespace ImageDups
                 }
                 else
                 {
-                    Logger.Info("Processing master image: " + path
+                    Logger.Info("Processing master file: " + path
                         + (cachedImage == null ? " (not cached)." : " (cache entry stale)."));
                     Stopwatch imageProcessingStopwatch = Stopwatch.StartNew();
                     string hash = GetFileHash(path);
-                    ulong perceptualHash;
-                    if (!TryGetPerceptualHash(path, out perceptualHash))
+                    ulong perceptualHash = 0;
+                    if (!IsVideoFile(path) && !TryGetPerceptualHash(path, out perceptualHash))
                     {
                         unsupportedImages++;
                         completed++;
                         progress.Report(new ScanProgress(
                             completed,
                             total,
-                            "Indexing master images",
+                            "Indexing master files",
                             cachedMasterImages,
                             processedMasterImages,
                             cachedCurrentImages,
@@ -431,18 +474,28 @@ namespace ImageDups
                     processedMasterImages++;
                 }
 
-                if (!masterHashes.ContainsKey(masterImage.ContentHash))
+                if (IsVideoFile(path))
                 {
-                    masterHashes.Add(masterImage.ContentHash, masterImage);
+                    if (!masterVideoHashes.ContainsKey(masterImage.ContentHash))
+                    {
+                        masterVideoHashes.Add(masterImage.ContentHash, masterImage);
+                    }
                 }
+                else
+                {
+                    if (!masterHashes.ContainsKey(masterImage.ContentHash))
+                    {
+                        masterHashes.Add(masterImage.ContentHash, masterImage);
+                    }
 
-                masterPerceptualHashes.Add(masterImage);
+                    masterPerceptualHashes.Add(masterImage);
+                }
 
                 completed++;
                 progress.Report(new ScanProgress(
                     completed,
                     total,
-                    "Indexing master images",
+                    "Indexing master files",
                     cachedMasterImages,
                     processedMasterImages,
                     cachedCurrentImages,
@@ -479,11 +532,11 @@ namespace ImageDups
                 }
                 else
                 {
-                    Logger.Info("Processing current image: " + currentPath
+                    Logger.Info("Processing current file: " + currentPath
                         + (cachedCurrentImage == null ? " (not cached)." : " (cache entry stale)."));
                     string hash = GetFileHash(currentPath);
-                    ulong perceptualHash;
-                    if (!TryGetPerceptualHash(currentPath, out perceptualHash))
+                    ulong perceptualHash = 0;
+                    if (!IsVideoFile(currentPath) && !TryGetPerceptualHash(currentPath, out perceptualHash))
                     {
                         unsupportedImages++;
                         completed++;
@@ -516,8 +569,12 @@ namespace ImageDups
                 }
 
                 IndexedImage exactMaster;
-                if (masterHashes.TryGetValue(currentImage.ContentHash, out exactMaster)
-                    && FilesAreIdentical(exactMaster.Path, currentPath))
+                bool isVideo = IsVideoFile(currentPath);
+                bool hasExactMaster = (isVideo
+                    ? masterVideoHashes
+                    : masterHashes).TryGetValue(currentImage.ContentHash, out exactMaster)
+                    && FilesAreIdentical(exactMaster.Path, currentPath);
+                if (hasExactMaster)
                 {
                     if (!TryAddImageMatch(
                         matches,
@@ -527,12 +584,13 @@ namespace ImageDups
                         100,
                         100,
                         byteThreshold,
-                        perceptualThreshold))
+                        perceptualThreshold,
+                        isVideo))
                     {
                         unsupportedImages++;
                     }
                 }
-                else
+                else if (!isVideo)
                 {
                     IndexedImage bestMaster = null;
                     int bestPerceptualSimilarity = -1;
@@ -574,7 +632,8 @@ namespace ImageDups
                             bestByteSimilarity,
                             bestPerceptualSimilarity,
                             byteThreshold,
-                            perceptualThreshold))
+                            perceptualThreshold,
+                            false))
                         {
                             unsupportedImages++;
                         }
@@ -766,11 +825,17 @@ namespace ImageDups
             }
         }
 
-        private static List<string> GetImageFiles(string root)
+        private static List<string> GetMediaFiles(string root, bool includeImages, bool includeVideos)
         {
             return Directory.EnumerateFiles(root, "*", System.IO.SearchOption.AllDirectories)
-                .Where(path => ImageExtensions.Contains(Path.GetExtension(path)))
+                .Where(path => (includeImages && ImageExtensions.Contains(Path.GetExtension(path)))
+                    || (includeVideos && IsVideoFile(path)))
                 .ToList();
+        }
+
+        private static bool IsVideoFile(string path)
+        {
+            return VideoExtensions.Contains(Path.GetExtension(path));
         }
 
         private static string GetFileHash(string path)
@@ -824,7 +889,8 @@ namespace ImageDups
             double byteSimilarity,
             int perceptualHashSimilarity,
             int byteThreshold,
-            int perceptualThreshold)
+            int perceptualThreshold,
+            bool isVideo)
         {
             try
             {
@@ -835,7 +901,8 @@ namespace ImageDups
                     byteSimilarity,
                     perceptualHashSimilarity,
                     byteThreshold,
-                    perceptualThreshold));
+                    perceptualThreshold,
+                    isVideo));
                 return true;
             }
             catch (NotSupportedException ex)
@@ -1069,7 +1136,7 @@ namespace ImageDups
                 progress.ComparisonImagesTotal,
                 progress.CachedCurrentImages,
                 progress.ProcessedCurrentImages);
-            isIndexing = progress.Stage == "Indexing master images";
+            isIndexing = progress.Stage == "Indexing master files";
             PauseIndexingButton.IsEnabled = isComparing && isIndexing;
             bool isEstimating = isIndexing || progress.Stage == ComparingImagesStage;
             if (isEstimating)
@@ -1097,7 +1164,7 @@ namespace ImageDups
         {
             textBlock.Text = "Total: " + total + Environment.NewLine
                 + "From cache: " + cached + " | Processed: " + processed;
-            textBlock.ToolTip = "Total images: " + total
+            textBlock.ToolTip = "Total media files: " + total
                 + Environment.NewLine + "Read from cache: " + cached
                 + Environment.NewLine + "Processed this scan: " + processed;
         }
@@ -1105,9 +1172,9 @@ namespace ImageDups
         private void ResetImageCounts()
         {
             MasterImageCountTextBlock.Text = "Not scanned";
-            MasterImageCountTextBlock.ToolTip = "Master images: total discovered, read from cache, and processed this scan.";
+            MasterImageCountTextBlock.ToolTip = "Master media files: total discovered, read from cache, and processed this scan.";
             CurrentImageCountTextBlock.Text = "Not scanned";
-            CurrentImageCountTextBlock.ToolTip = "Current images: total discovered, read from cache, and processed this scan.";
+            CurrentImageCountTextBlock.ToolTip = "Current media files: total discovered, read from cache, and processed this scan.";
         }
 
         private void UpdateEtaEstimate(string stage, int processed, int toProcess, TimeSpan processingTime)
@@ -1133,7 +1200,7 @@ namespace ImageDups
             string averageText = etaAverageSecondsPerImage.HasValue
                 ? string.Format(
                     CultureInfo.InvariantCulture,
-                    "Avg: {0:0.00}s/image",
+                    "Avg: {0:0.00}s/file",
                     etaAverageSecondsPerImage.Value)
                 : "Avg: calculating...";
 
@@ -1187,9 +1254,9 @@ namespace ImageDups
             string currentCachePath = string.IsNullOrWhiteSpace(currentRoot)
                 ? null
                 : Path.Combine(currentRoot, IndexCacheFileName);
-            CacheStatusTextBlock.Text = "Master cache: "
+            CacheStatusTextBlock.Text = "Master media cache: "
                 + (masterCachePath ?? "choose a master folder")
-                + "; current cache: " + (currentCachePath ?? "choose a current-images folder")
+                + "; current media cache: " + (currentCachePath ?? "choose a current folder")
                 + ". Each folder and its subfolders are searched.";
             CacheStatusTextBlock.ToolTip = "Master: " + (masterCachePath ?? "not selected")
                 + Environment.NewLine + "Current: " + (currentCachePath ?? "not selected");
@@ -1250,8 +1317,8 @@ namespace ImageDups
             }
 
             MessageBoxResult confirmation = MessageBox.Show(this,
-                "Send " + selected.Count + (selected.Count == 1 ? " selected image" : " selected images") +
-                " from the current-images folder to the Recycle Bin?\n\nMaster images will not be changed.",
+                "Send " + selected.Count + (selected.Count == 1 ? " selected file" : " selected files") +
+                " from the current folder to the Recycle Bin?\n\nMaster files will not be changed.",
                 "Confirm recycle", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirmation != MessageBoxResult.Yes)
             {
@@ -1261,21 +1328,23 @@ namespace ImageDups
 
             string currentRoot = EnsureTrailingSeparator(Path.GetFullPath(CurrentFolderTextBox.Text));
             string currentFolder = CurrentFolderTextBox.Text;
-            Logger.Info("Recycle operation started for " + selected.Count + " selected image(s).");
+            Logger.Info("Recycle operation started for " + selected.Count + " selected media file(s).");
             DeleteButton.IsEnabled = false;
             ResultsList.IsEnabled = false;
             CompareButton.IsEnabled = false;
             ChooseMasterFolderButton.IsEnabled = false;
             ChooseCurrentFolderButton.IsEnabled = false;
+            CompareImagesCheckBox.IsEnabled = false;
+            CompareVideosCheckBox.IsEnabled = false;
             ProgressBar.IsIndeterminate = false;
             ProgressBar.Minimum = 0;
             ProgressBar.Maximum = selected.Count;
             ProgressBar.Value = 0;
-            StatusTextBlock.Text = "Sending selected images to the Recycle Bin...";
+            StatusTextBlock.Text = "Sending selected files to the Recycle Bin...";
             var progress = new Progress<int>(completed =>
             {
                 ProgressBar.Value = completed;
-                StatusTextBlock.Text = "Sending selected images to the Recycle Bin: "
+                StatusTextBlock.Text = "Sending selected files to the Recycle Bin: "
                     + completed + " of " + selected.Count + "...";
             });
 
@@ -1294,10 +1363,12 @@ namespace ImageDups
                 StatusTextBlock.Text = result.RecycledMatches.Count + (result.RecycledMatches.Count == 1
                     ? " selected copy sent to the Recycle Bin."
                     : " selected copies sent to the Recycle Bin.")
+                    + " Total size: " + FormatRecycledSize(result.RecycledBytes) + "."
                     + (result.CacheCleanupFailures.Count == 0
                         ? string.Empty
-                        : " Cache cleanup failed for " + result.CacheCleanupFailures.Count + " recycled image(s).");
+                        : " Cache cleanup failed for " + result.CacheCleanupFailures.Count + " recycled file(s).");
                 Logger.Info("Recycle operation finished. Recycled: " + result.RecycledMatches.Count
+                    + "; total size: " + result.RecycledBytes + " bytes"
                     + "; recycle failures: " + result.Failures.Count
                     + "; cache cleanup failures: " + result.CacheCleanupFailures.Count + ".");
 
@@ -1306,7 +1377,7 @@ namespace ImageDups
                     var details = new List<string>();
                     if (result.Failures.Count > 0)
                     {
-                        details.Add("Could not recycle " + result.Failures.Count + " image(s):");
+                        details.Add("Could not recycle " + result.Failures.Count + " file(s):");
                         details.AddRange(result.Failures.Take(10));
                         if (result.Failures.Count > 10)
                         {
@@ -1317,7 +1388,7 @@ namespace ImageDups
                     if (result.CacheCleanupFailures.Count > 0)
                     {
                         details.Add("Recycled, but could not clean up cache entries for "
-                            + result.CacheCleanupFailures.Count + " image(s):");
+                            + result.CacheCleanupFailures.Count + " file(s):");
                         details.AddRange(result.CacheCleanupFailures.Take(10));
                         if (result.CacheCleanupFailures.Count > 10)
                         {
@@ -1326,7 +1397,8 @@ namespace ImageDups
                     }
 
                     MessageBox.Show(this,
-                        result.RecycledMatches.Count + " image(s) sent to the Recycle Bin.\n\n"
+                        result.RecycledMatches.Count + " file(s) sent to the Recycle Bin.\n\n"
+                            + "Total size: " + FormatRecycledSize(result.RecycledBytes) + ".\n\n"
                             + string.Join("\n", details),
                         result.CacheCleanupFailures.Count > 0 && result.Failures.Count == 0
                             ? "Cache cleanup warning"
@@ -1338,8 +1410,9 @@ namespace ImageDups
                 {
                     MessageBox.Show(this,
                         result.RecycledMatches.Count + (result.RecycledMatches.Count == 1
-                            ? " image was"
-                            : " images were") + " sent to the Recycle Bin.",
+                            ? " file was"
+                            : " files were") + " sent to the Recycle Bin.\n\n"
+                            + "Total size: " + FormatRecycledSize(result.RecycledBytes) + ".",
                         "Recycle complete",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
@@ -1350,7 +1423,7 @@ namespace ImageDups
                 StatusTextBlock.Text = "Recycle operation failed.";
                 Logger.Error("Recycle operation failed.", ex);
                 MessageBox.Show(this,
-                    "The selected images could not be sent to the Recycle Bin:\n\n" + ex.Message,
+                    "The selected files could not be sent to the Recycle Bin:\n\n" + ex.Message,
                     "Recycle operation error",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
@@ -1363,7 +1436,17 @@ namespace ImageDups
                 CompareButton.IsEnabled = true;
                 ChooseMasterFolderButton.IsEnabled = true;
                 ChooseCurrentFolderButton.IsEnabled = true;
+                CompareImagesCheckBox.IsEnabled = true;
+                CompareVideosCheckBox.IsEnabled = true;
             }
+        }
+
+        private static string FormatRecycledSize(long bytes)
+        {
+            double megabytes = bytes / (1024.0 * 1024.0);
+            return megabytes >= 1024
+                ? (megabytes / 1024).ToString("0.##", CultureInfo.InvariantCulture) + " GB"
+                : megabytes.ToString("0.##", CultureInfo.InvariantCulture) + " MB";
         }
 
         private static RecycleOperationResult RecycleSelectedImages(
@@ -1375,6 +1458,7 @@ namespace ImageDups
             var recycledMatches = new List<ImageMatch>();
             var failures = new List<string>();
             var cacheCleanupFailures = new List<string>();
+            long recycledBytes = 0;
             int completed = 0;
 
             foreach (ImageMatch match in selected)
@@ -1382,7 +1466,7 @@ namespace ImageDups
                 string fullPath = Path.GetFullPath(match.CurrentPath);
                 if (!fullPath.StartsWith(currentRoot, StringComparison.OrdinalIgnoreCase))
                 {
-                    failures.Add(match.CurrentPath + ": file is outside the selected current-images folder.");
+                    failures.Add(match.CurrentPath + ": file is outside the selected current folder.");
                     Logger.Warn("Recycle rejected for path outside current folder: " + fullPath);
                     progress.Report(++completed);
                     continue;
@@ -1412,14 +1496,16 @@ namespace ImageDups
 
                     if (!stillMatches)
                     {
-                        failures.Add(fullPath + ": file no longer matches its master image.");
+                        failures.Add(fullPath + ": file no longer matches its master file.");
                         progress.Report(++completed);
                         continue;
                     }
 
+                    long fileLength = new FileInfo(fullPath).Length;
                     FileSystem.DeleteFile(fullPath, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
                     recycledMatches.Add(match);
-                    Logger.Info("Sent current image to Recycle Bin: " + fullPath);
+                    recycledBytes += fileLength;
+                    Logger.Info("Sent current media file to Recycle Bin: " + fullPath);
                     try
                     {
                         RemoveIndexCacheEntry(currentFolder, fullPath);
@@ -1427,7 +1513,7 @@ namespace ImageDups
                     catch (Exception ex)
                     {
                         cacheCleanupFailures.Add(fullPath + ": " + ex.Message);
-                        Logger.Error("Could not remove the cache entry for recycled image " + fullPath + ".", ex);
+                        Logger.Error("Could not remove the cache entry for recycled file " + fullPath + ".", ex);
                     }
                 }
                 catch (Exception ex)
@@ -1439,7 +1525,7 @@ namespace ImageDups
                 progress.Report(++completed);
             }
 
-            return new RecycleOperationResult(recycledMatches, failures, cacheCleanupFailures);
+            return new RecycleOperationResult(recycledMatches, failures, cacheCleanupFailures, recycledBytes);
         }
 
         private void ClearResults()
@@ -1504,15 +1590,18 @@ namespace ImageDups
         public List<ImageMatch> RecycledMatches { get; private set; }
         public List<string> Failures { get; private set; }
         public List<string> CacheCleanupFailures { get; private set; }
+        public long RecycledBytes { get; private set; }
 
         public RecycleOperationResult(
             IEnumerable<ImageMatch> recycledMatches,
             IEnumerable<string> failures,
-            IEnumerable<string> cacheCleanupFailures)
+            IEnumerable<string> cacheCleanupFailures,
+            long recycledBytes)
         {
             RecycledMatches = recycledMatches.ToList();
             Failures = failures.ToList();
             CacheCleanupFailures = cacheCleanupFailures.ToList();
+            RecycledBytes = recycledBytes;
         }
     }
 
@@ -1559,6 +1648,9 @@ namespace ImageDups
         public string MasterDetails { get; private set; }
         public string CurrentDetails { get; private set; }
         public string ComparisonDetails { get; private set; }
+        public bool IsVideo { get; private set; }
+        public string MasterVideoLabel { get { return IsVideo ? "VIDEO\nExact content match" : string.Empty; } }
+        public string CurrentVideoLabel { get { return IsVideo ? "VIDEO\nExact content match" : string.Empty; } }
         public bool IsExactFileMatch { get; private set; }
         public int ByteSimilarityThreshold { get; private set; }
         public int PerceptualSimilarityThreshold { get; private set; }
@@ -1571,32 +1663,45 @@ namespace ImageDups
             double byteSimilarity,
             int perceptualHashSimilarity,
             int byteSimilarityThreshold,
-            int perceptualSimilarityThreshold)
+            int perceptualSimilarityThreshold,
+            bool isVideo)
         {
             MasterPath = masterPath;
             CurrentPath = currentPath;
-            MasterThumbnail = LoadThumbnail(masterPath);
-            CurrentThumbnail = LoadThumbnail(currentPath);
-            MasterDetails = LoadDetails(masterPath);
-            CurrentDetails = LoadDetails(currentPath);
+            IsVideo = isVideo;
+            MasterThumbnail = isVideo ? null : LoadThumbnail(masterPath);
+            CurrentThumbnail = isVideo ? null : LoadThumbnail(currentPath);
+            MasterDetails = LoadDetails(masterPath, isVideo);
+            CurrentDetails = LoadDetails(currentPath, isVideo);
             IsExactFileMatch = isExactFileMatch;
             ByteSimilarityThreshold = byteSimilarityThreshold;
             PerceptualSimilarityThreshold = perceptualSimilarityThreshold;
-            ComparisonDetails = string.Format(
-                "SHA-256 exact-file indicator: {0}% ({1})\nByte-content similarity: {2:0.##}% (threshold: {3}%)\npHash similarity: {4}% (threshold: {5}%; {6})",
-                isExactFileMatch ? 100 : 0,
-                isExactFileMatch ? "identical file" : "different file content",
-                byteSimilarity,
-                byteSimilarityThreshold,
-                perceptualHashSimilarity,
-                perceptualSimilarityThreshold,
-                isExactFileMatch ? "exact-file match" : "pHash match; review before recycle");
+            ComparisonDetails = isVideo
+                ? "SHA-256: exact match\nVideo matches require identical file content."
+                : string.Format(
+                    "SHA-256 exact-file indicator: {0}% ({1})\nByte-content similarity: {2:0.##}% (threshold: {3}%)\npHash similarity: {4}% (threshold: {5}%; {6})",
+                    isExactFileMatch ? 100 : 0,
+                    isExactFileMatch ? "identical file" : "different file content",
+                    byteSimilarity,
+                    byteSimilarityThreshold,
+                    perceptualHashSimilarity,
+                    perceptualSimilarityThreshold,
+                    isExactFileMatch ? "exact-file match" : "pHash match; review before recycle");
             IsSelected = isExactFileMatch;
         }
 
-        private static string LoadDetails(string path)
+        private static string LoadDetails(string path, bool isVideo)
         {
             var file = new FileInfo(path);
+            if (isVideo)
+            {
+                return string.Format(
+                    "Video file\nSize: {0}\nFormat: {1}\nModified: {2}",
+                    FormatFileSize(file.Length),
+                    Path.GetExtension(path).TrimStart('.').ToUpperInvariant(),
+                    file.LastWriteTime.ToString("g"));
+            }
+
             BitmapDecoder decoder = BitmapDecoder.Create(
                 new Uri(path),
                 BitmapCreateOptions.DelayCreation,

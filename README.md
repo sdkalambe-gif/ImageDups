@@ -1,9 +1,18 @@
 # ImageDups
 
-ImageDups is a Windows desktop application for finding duplicate and visually
-similar images across two folders. It compares image content and perceptual
-hashes, and lets you review matches before sending selected files to the
+ImageDups is a Windows desktop application for comparing image and video files
+across two folders. It finds duplicate and visually similar images using
+content and perceptual hashes, and finds videos only when their file contents
+are identical. You can review matches before sending selected files to the
 Recycle Bin.
+
+The comparison controls let you choose images, videos, or both. Images are
+selected by default; videos are opt-in.
+
+Supported video extensions are `.3gp`, `.avi`, `.flv`, `.m2ts`, `.m4v`, `.mkv`,
+`.mov`, `.mp4`, `.mpeg`, `.mpg`, `.mts`, `.ogv`, `.ts`, `.vob`, `.webm`, and
+`.wmv`. Video comparisons use SHA-256 and a byte-for-byte confirmation; videos
+are not compared by visual similarity.
 
 ## Requirements
 
@@ -24,10 +33,9 @@ msbuild ImageDups.slnx /t:Build /p:Configuration=Release
 
 The executable is written to `ImageDups\bin\Release\ImageDups.exe`.
 
-The application stores its logs under `%TEMP%\ImageDups` and image index caches
-in the selected master and current-images folders. Changed images are
-reprocessed, and cache entries are removed when current images are sent to the
-Recycle Bin.
+The application stores its logs under `%TEMP%\ImageDups` and media index caches
+in the selected master and current folders. Changed files are reprocessed, and
+cache entries are removed when current files are sent to the Recycle Bin.
 
 ## Download the latest build
 
