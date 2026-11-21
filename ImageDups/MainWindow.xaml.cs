@@ -1239,7 +1239,7 @@ namespace ImageDups
             }
         }
 
-        private void DeleteSelected_Click(object sender, RoutedEventArgs e)
+        private async void DeleteSelected_Click(object sender, RoutedEventArgs e)
         {
             List<ImageMatch> selected = Matches.Where(match => match.IsSelected).ToList();
             if (selected.Count == 0)
@@ -1260,10 +1260,122 @@ namespace ImageDups
             }
 
             string currentRoot = EnsureTrailingSeparator(Path.GetFullPath(CurrentFolderTextBox.Text));
-            int recycled = 0;
+            string currentFolder = CurrentFolderTextBox.Text;
             Logger.Info("Recycle operation started for " + selected.Count + " selected image(s).");
+            DeleteButton.IsEnabled = false;
+            ResultsList.IsEnabled = false;
+            CompareButton.IsEnabled = false;
+            ChooseMasterFolderButton.IsEnabled = false;
+            ChooseCurrentFolderButton.IsEnabled = false;
+            ProgressBar.IsIndeterminate = false;
+            ProgressBar.Minimum = 0;
+            ProgressBar.Maximum = selected.Count;
+            ProgressBar.Value = 0;
+            StatusTextBlock.Text = "Sending selected images to the Recycle Bin...";
+            var progress = new Progress<int>(completed =>
+            {
+                ProgressBar.Value = completed;
+                StatusTextBlock.Text = "Sending selected images to the Recycle Bin: "
+                    + completed + " of " + selected.Count + "...";
+            });
+
+            try
+            {
+                RecycleOperationResult result = await Task.Run(
+                    () => RecycleSelectedImages(selected, currentRoot, currentFolder, progress));
+                foreach (ImageMatch match in result.RecycledMatches)
+                {
+                    Matches.Remove(match);
+                }
+
+                ResultsCountTextBlock.Text = Matches.Count + (Matches.Count == 1 ? " match" : " matches");
+                ProgressBar.Maximum = 100;
+                ProgressBar.Value = 100;
+                StatusTextBlock.Text = result.RecycledMatches.Count + (result.RecycledMatches.Count == 1
+                    ? " selected copy sent to the Recycle Bin."
+                    : " selected copies sent to the Recycle Bin.")
+                    + (result.CacheCleanupFailures.Count == 0
+                        ? string.Empty
+                        : " Cache cleanup failed for " + result.CacheCleanupFailures.Count + " recycled image(s).");
+                Logger.Info("Recycle operation finished. Recycled: " + result.RecycledMatches.Count
+                    + "; recycle failures: " + result.Failures.Count
+                    + "; cache cleanup failures: " + result.CacheCleanupFailures.Count + ".");
+
+                if (result.Failures.Count > 0 || result.CacheCleanupFailures.Count > 0)
+                {
+                    var details = new List<string>();
+                    if (result.Failures.Count > 0)
+                    {
+                        details.Add("Could not recycle " + result.Failures.Count + " image(s):");
+                        details.AddRange(result.Failures.Take(10));
+                        if (result.Failures.Count > 10)
+                        {
+                            details.Add("...and " + (result.Failures.Count - 10) + " more.");
+                        }
+                    }
+
+                    if (result.CacheCleanupFailures.Count > 0)
+                    {
+                        details.Add("Recycled, but could not clean up cache entries for "
+                            + result.CacheCleanupFailures.Count + " image(s):");
+                        details.AddRange(result.CacheCleanupFailures.Take(10));
+                        if (result.CacheCleanupFailures.Count > 10)
+                        {
+                            details.Add("...and " + (result.CacheCleanupFailures.Count - 10) + " more.");
+                        }
+                    }
+
+                    MessageBox.Show(this,
+                        result.RecycledMatches.Count + " image(s) sent to the Recycle Bin.\n\n"
+                            + string.Join("\n", details),
+                        result.CacheCleanupFailures.Count > 0 && result.Failures.Count == 0
+                            ? "Cache cleanup warning"
+                            : "Recycle operation warning",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+                else
+                {
+                    MessageBox.Show(this,
+                        result.RecycledMatches.Count + (result.RecycledMatches.Count == 1
+                            ? " image was"
+                            : " images were") + " sent to the Recycle Bin.",
+                        "Recycle complete",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusTextBlock.Text = "Recycle operation failed.";
+                Logger.Error("Recycle operation failed.", ex);
+                MessageBox.Show(this,
+                    "The selected images could not be sent to the Recycle Bin:\n\n" + ex.Message,
+                    "Recycle operation error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            finally
+            {
+                ProgressBar.Maximum = 100;
+                DeleteButton.IsEnabled = Matches.Count > 0;
+                ResultsList.IsEnabled = true;
+                CompareButton.IsEnabled = true;
+                ChooseMasterFolderButton.IsEnabled = true;
+                ChooseCurrentFolderButton.IsEnabled = true;
+            }
+        }
+
+        private static RecycleOperationResult RecycleSelectedImages(
+            IEnumerable<ImageMatch> selected,
+            string currentRoot,
+            string currentFolder,
+            IProgress<int> progress)
+        {
+            var recycledMatches = new List<ImageMatch>();
             var failures = new List<string>();
             var cacheCleanupFailures = new List<string>();
+            int completed = 0;
 
             foreach (ImageMatch match in selected)
             {
@@ -1272,6 +1384,7 @@ namespace ImageDups
                 {
                     failures.Add(match.CurrentPath + ": file is outside the selected current-images folder.");
                     Logger.Warn("Recycle rejected for path outside current folder: " + fullPath);
+                    progress.Report(++completed);
                     continue;
                 }
 
@@ -1296,19 +1409,20 @@ namespace ImageDups
                         stillMatches = perceptualSimilarity >= match.PerceptualSimilarityThreshold
                             && byteSimilarity >= match.ByteSimilarityThreshold;
                     }
+
                     if (!stillMatches)
                     {
                         failures.Add(fullPath + ": file no longer matches its master image.");
+                        progress.Report(++completed);
                         continue;
                     }
 
                     FileSystem.DeleteFile(fullPath, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
-                    Matches.Remove(match);
-                    recycled++;
+                    recycledMatches.Add(match);
                     Logger.Info("Sent current image to Recycle Bin: " + fullPath);
                     try
                     {
-                        RemoveIndexCacheEntry(CurrentFolderTextBox.Text, fullPath);
+                        RemoveIndexCacheEntry(currentFolder, fullPath);
                     }
                     catch (Exception ex)
                     {
@@ -1321,52 +1435,11 @@ namespace ImageDups
                     failures.Add(fullPath + ": " + ex.Message);
                     Logger.Error("Could not recycle " + fullPath + ".", ex);
                 }
+
+                progress.Report(++completed);
             }
 
-            ResultsCountTextBlock.Text = Matches.Count + (Matches.Count == 1 ? " match" : " matches");
-            DeleteButton.IsEnabled = Matches.Count > 0;
-            StatusTextBlock.Text = recycled + (recycled == 1
-                ? " selected copy sent to the Recycle Bin."
-                : " selected copies sent to the Recycle Bin.")
-                + (cacheCleanupFailures.Count == 0
-                    ? string.Empty
-                    : " Cache cleanup failed for " + cacheCleanupFailures.Count + " recycled image(s).");
-            Logger.Info("Recycle operation finished. Recycled: " + recycled
-                + "; recycle failures: " + failures.Count
-                + "; cache cleanup failures: " + cacheCleanupFailures.Count + ".");
-
-            if (failures.Count > 0 || cacheCleanupFailures.Count > 0)
-            {
-                var details = new List<string>();
-                if (failures.Count > 0)
-                {
-                    details.Add("Could not recycle " + failures.Count + " image(s):");
-                    details.AddRange(failures.Take(10));
-                    if (failures.Count > 10)
-                    {
-                        details.Add("...and " + (failures.Count - 10) + " more.");
-                    }
-                }
-
-                if (cacheCleanupFailures.Count > 0)
-                {
-                    details.Add("Recycled, but could not clean up cache entries for "
-                        + cacheCleanupFailures.Count + " image(s):");
-                    details.AddRange(cacheCleanupFailures.Take(10));
-                    if (cacheCleanupFailures.Count > 10)
-                    {
-                        details.Add("...and " + (cacheCleanupFailures.Count - 10) + " more.");
-                    }
-                }
-
-                MessageBox.Show(this,
-                    recycled + " image(s) sent to the Recycle Bin.\n\n" + string.Join("\n", details),
-                    cacheCleanupFailures.Count > 0 && failures.Count == 0
-                        ? "Cache cleanup warning"
-                        : "Recycle operation warning",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-            }
+            return new RecycleOperationResult(recycledMatches, failures, cacheCleanupFailures);
         }
 
         private void ClearResults()
@@ -1423,6 +1496,23 @@ namespace ImageDups
             PerceptualHash = perceptualHash;
             FileLength = fileLength;
             LastWriteTimeUtcTicks = lastWriteTimeUtcTicks;
+        }
+    }
+
+    internal sealed class RecycleOperationResult
+    {
+        public List<ImageMatch> RecycledMatches { get; private set; }
+        public List<string> Failures { get; private set; }
+        public List<string> CacheCleanupFailures { get; private set; }
+
+        public RecycleOperationResult(
+            IEnumerable<ImageMatch> recycledMatches,
+            IEnumerable<string> failures,
+            IEnumerable<string> cacheCleanupFailures)
+        {
+            RecycledMatches = recycledMatches.ToList();
+            Failures = failures.ToList();
+            CacheCleanupFailures = cacheCleanupFailures.ToList();
         }
     }
 

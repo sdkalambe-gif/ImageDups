@@ -33,6 +33,74 @@
             <Setter Property="FontSize" Value="13" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Background" Value="#F2F4F7" />
+            <Setter Property="Foreground" Value="#344054" />
+            <Setter Property="BorderBrush" Value="#D0D5DD" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4" SnapsToDevicePixels="True">
+                            <ContentPresenter x:Name="ButtonContent"
+                                              Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#E4E7EC" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="#101828" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#D0D5DD" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="#101828" />
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Primary" />
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#2546B8" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="White" />
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Primary" />
+                                    <Condition Property="IsPressed" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#1D3690" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="White" />
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Danger" />
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#8F1D14" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="White" />
+                            </MultiTrigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="Tag" Value="Danger" />
+                                    <Condition Property="IsPressed" Value="True" />
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#70170F" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="White" />
+                            </MultiTrigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#EAECF0" />
+                                <Setter TargetName="ButtonContent" Property="TextElement.Foreground" Value="#667085" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Padding" Value="9,7" />
@@ -90,6 +158,7 @@
                         Click="ChooseMasterFolder_Click" />
                 <Button x:Name="CompareButton" Grid.Row="0" Grid.Column="3"
                         Content="Start comparison" Click="Compare_Click"
+                        Tag="Primary"
                         ToolTip="Compare file-byte similarity and pHash with separate thresholds, review both scores, and safely send selected current-folder copies to the Recycle Bin."
                         Background="{StaticResource AccentBrush}" Foreground="White" BorderThickness="0" />
 
@@ -116,6 +185,7 @@
 
                 <Button x:Name="DeleteButton" Grid.Row="2" Grid.Column="3" Content="Send selected to Recycle Bin"
                         Click="DeleteSelected_Click" IsEnabled="False"
+                        Tag="Danger"
                         Background="#B42318" Foreground="White" BorderThickness="0" />
 
                 <Grid Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4">
