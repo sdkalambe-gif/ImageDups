@@ -277,15 +277,21 @@ namespace ImageDups
                     + foundMatches.CachedCurrentImages + " hits, "
                     + foundMatches.ProcessedCurrentImages + " processed; "
                     + foundMatches.CacheFilesRead + " cache file(s) searched.";
+                string unsupportedImageSummary = foundMatches.UnsupportedImages == 0
+                    ? string.Empty
+                    : " " + foundMatches.UnsupportedImages
+                        + " image(s) skipped because Windows could not decode them; see the log for file paths.";
                 StatusTextBlock.Text = foundMatches.Count == 0
-                    ? "Comparison complete. No images met both similarity thresholds." + indexSummary
-                    : "Comparison complete. Exact files are selected; review similarity matches before selecting them." + indexSummary;
+                    ? "Comparison complete. No images met both similarity thresholds." + unsupportedImageSummary + indexSummary
+                    : "Comparison complete. Exact files are selected; review similarity matches before selecting them."
+                        + unsupportedImageSummary + indexSummary;
                 UpdateCacheFileList(foundMatches.CacheFilePaths);
                 Logger.Info("Comparison completed. Matches: " + foundMatches.Count
                     + "; master images read from cache: " + foundMatches.CachedMasterImages
                     + "; master images processed: " + foundMatches.ProcessedMasterImages
                     + "; current images read from cache: " + foundMatches.CachedCurrentImages
-                    + "; current images processed: " + foundMatches.ProcessedCurrentImages + ".");
+                    + "; current images processed: " + foundMatches.ProcessedCurrentImages
+                    + "; unsupported images skipped: " + foundMatches.UnsupportedImages + ".");
                 ProgressBar.Value = 100;
                 DeleteButton.IsEnabled = foundMatches.Count > 0;
             }
@@ -338,6 +344,7 @@ namespace ImageDups
             int processedMasterImages = 0;
             int cachedCurrentImages = 0;
             int processedCurrentImages = 0;
+            int unsupportedImages = 0;
             int comparisonImagesCompleted = 0;
             TimeSpan comparisonImageProcessingTime = TimeSpan.Zero;
             TimeSpan imageProcessingTime = TimeSpan.Zero;
@@ -388,7 +395,29 @@ namespace ImageDups
                         + (cachedImage == null ? " (not cached)." : " (cache entry stale)."));
                     Stopwatch imageProcessingStopwatch = Stopwatch.StartNew();
                     string hash = GetFileHash(path);
-                    ulong perceptualHash = GetPerceptualHash(path);
+                    ulong perceptualHash;
+                    if (!TryGetPerceptualHash(path, out perceptualHash))
+                    {
+                        unsupportedImages++;
+                        completed++;
+                        progress.Report(new ScanProgress(
+                            completed,
+                            total,
+                            "Indexing master images",
+                            cachedMasterImages,
+                            processedMasterImages,
+                            cachedCurrentImages,
+                            processedCurrentImages,
+                            cachePaths,
+                            processedMasterImages,
+                            masterImagesToProcess,
+                            imageProcessingTime,
+                            comparisonImagesCompleted,
+                            currentFiles.Count,
+                            comparisonImageProcessingTime));
+                        continue;
+                    }
+
                     masterImage = new IndexedImage(
                         path,
                         hash,
@@ -452,7 +481,29 @@ namespace ImageDups
                     Logger.Info("Processing current image: " + currentPath
                         + (cachedCurrentImage == null ? " (not cached)." : " (cache entry stale)."));
                     string hash = GetFileHash(currentPath);
-                    ulong perceptualHash = GetPerceptualHash(currentPath);
+                    ulong perceptualHash;
+                    if (!TryGetPerceptualHash(currentPath, out perceptualHash))
+                    {
+                        unsupportedImages++;
+                        completed++;
+                        progress.Report(new ScanProgress(
+                            completed,
+                            total,
+                            ComparingImagesStage,
+                            cachedMasterImages,
+                            processedMasterImages,
+                            cachedCurrentImages,
+                            processedCurrentImages,
+                            cachePaths,
+                            processedMasterImages,
+                            masterImagesToProcess,
+                            imageProcessingTime,
+                            comparisonImagesCompleted,
+                            currentFiles.Count,
+                            comparisonImageProcessingTime));
+                        continue;
+                    }
+
                     currentImage = new IndexedImage(
                         currentPath,
                         hash,
@@ -467,14 +518,18 @@ namespace ImageDups
                 if (masterHashes.TryGetValue(currentImage.ContentHash, out exactMaster)
                     && FilesAreIdentical(exactMaster.Path, currentPath))
                 {
-                    matches.Add(new ImageMatch(
+                    if (!TryAddImageMatch(
+                        matches,
                         exactMaster.Path,
                         currentPath,
                         true,
                         100,
                         100,
                         byteThreshold,
-                        perceptualThreshold));
+                        perceptualThreshold))
+                    {
+                        unsupportedImages++;
+                    }
                 }
                 else
                 {
@@ -510,14 +565,18 @@ namespace ImageDups
 
                     if (bestMaster != null)
                     {
-                        matches.Add(new ImageMatch(
+                        if (!TryAddImageMatch(
+                            matches,
                             bestMaster.Path,
                             currentPath,
                             false,
                             bestByteSimilarity,
                             bestPerceptualSimilarity,
                             byteThreshold,
-                            perceptualThreshold));
+                            perceptualThreshold))
+                        {
+                            unsupportedImages++;
+                        }
                     }
                 }
 
@@ -548,7 +607,8 @@ namespace ImageDups
                 processedMasterImages,
                 cachedCurrentImages,
                 processedCurrentImages,
-                cachePaths);
+                cachePaths,
+                unsupportedImages);
         }
 
         private static Dictionary<string, IndexedImage> ReadIndexCache(
@@ -730,6 +790,58 @@ namespace ImageDups
             {
                 Logger.Error("Could not calculate perceptual hash for image: " + path, ex);
                 throw;
+            }
+        }
+
+        private static bool TryGetPerceptualHash(string path, out ulong perceptualHash)
+        {
+            try
+            {
+                perceptualHash = ComputePerceptualHash(path);
+                return true;
+            }
+            catch (NotSupportedException ex)
+            {
+                perceptualHash = 0;
+                Logger.Warn("Skipping image because Windows has no suitable imaging decoder: " + path, ex);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Could not calculate perceptual hash for image: " + path, ex);
+                throw;
+            }
+        }
+
+        private static bool TryAddImageMatch(
+            IList<ImageMatch> matches,
+            string masterPath,
+            string currentPath,
+            bool isExactFileMatch,
+            double byteSimilarity,
+            int perceptualHashSimilarity,
+            int byteThreshold,
+            int perceptualThreshold)
+        {
+            try
+            {
+                matches.Add(new ImageMatch(
+                    masterPath,
+                    currentPath,
+                    isExactFileMatch,
+                    byteSimilarity,
+                    perceptualHashSimilarity,
+                    byteThreshold,
+                    perceptualThreshold));
+                return true;
+            }
+            catch (NotSupportedException ex)
+            {
+                Logger.Warn(
+                    "Skipping match because Windows has no suitable imaging decoder for "
+                        + masterPath + " or " + currentPath + ".",
+                    ex);
+                return false;
             }
         }
 
@@ -1298,6 +1410,7 @@ namespace ImageDups
         public int ProcessedMasterImages { get; private set; }
         public int CachedCurrentImages { get; private set; }
         public int ProcessedCurrentImages { get; private set; }
+        public int UnsupportedImages { get; private set; }
         public List<string> CacheFilePaths { get; private set; }
         public int CacheFilesRead { get { return CacheFilePaths.Count; } }
         public MatchScanResult(
@@ -1306,7 +1419,8 @@ namespace ImageDups
             int processedMasterImages,
             int cachedCurrentImages,
             int processedCurrentImages,
-            IEnumerable<string> cacheFilePaths)
+            IEnumerable<string> cacheFilePaths,
+            int unsupportedImages)
             : base(matches)
         {
             CachedMasterImages = cachedMasterImages;
@@ -1314,6 +1428,7 @@ namespace ImageDups
             CachedCurrentImages = cachedCurrentImages;
             ProcessedCurrentImages = processedCurrentImages;
             CacheFilePaths = cacheFilePaths.ToList();
+            UnsupportedImages = unsupportedImages;
         }
     }
 
