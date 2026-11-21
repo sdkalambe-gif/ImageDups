@@ -9,10 +9,14 @@ Recycle Bin.
 The comparison controls let you choose images, videos, or both. Images are
 selected by default; videos are opt-in.
 
+Supported image extensions are `.bmp`, `.gif`, `.jpeg`, `.jpg`, `.png`, `.tif`,
+and `.tiff`.
+
 Supported video extensions are `.3gp`, `.avi`, `.flv`, `.m2ts`, `.m4v`, `.mkv`,
 `.mov`, `.mp4`, `.mpeg`, `.mpg`, `.mts`, `.ogv`, `.ts`, `.vob`, `.webm`, and
-`.wmv`. Video comparisons use SHA-256 and a byte-for-byte confirmation; videos
-are not compared by visual similarity.
+`.wmv`. Video comparisons use cached SHA-256 hashes; videos are not compared by
+visual similarity. Before a selected video is recycled, its match is
+revalidated byte-for-byte.
 
 ## Requirements
 

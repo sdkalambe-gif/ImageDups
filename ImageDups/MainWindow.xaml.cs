@@ -415,6 +415,7 @@ namespace ImageDups
             var masterHashes = new Dictionary<string, IndexedImage>(StringComparer.Ordinal);
             var masterVideoHashes = new Dictionary<string, IndexedImage>(StringComparer.Ordinal);
             var masterPerceptualHashes = new List<IndexedImage>();
+            var masterPerceptualHashesByHash = new Dictionary<ulong, List<IndexedImage>>();
             foreach (string path in masterFiles)
             {
                 indexingPause.Wait();
@@ -489,6 +490,18 @@ namespace ImageDups
                     }
 
                     masterPerceptualHashes.Add(masterImage);
+                    List<IndexedImage> matchingPerceptualHashes;
+                    if (!masterPerceptualHashesByHash.TryGetValue(
+                        masterImage.PerceptualHash,
+                        out matchingPerceptualHashes))
+                    {
+                        matchingPerceptualHashes = new List<IndexedImage>();
+                        masterPerceptualHashesByHash.Add(
+                            masterImage.PerceptualHash,
+                            matchingPerceptualHashes);
+                    }
+
+                    matchingPerceptualHashes.Add(masterImage);
                 }
 
                 completed++;
@@ -570,10 +583,18 @@ namespace ImageDups
 
                 IndexedImage exactMaster;
                 bool isVideo = IsVideoFile(currentPath);
-                bool hasExactMaster = (isVideo
-                    ? masterVideoHashes
-                    : masterHashes).TryGetValue(currentImage.ContentHash, out exactMaster)
-                    && FilesAreIdentical(exactMaster.Path, currentPath);
+                bool hasExactMaster;
+                if (isVideo)
+                {
+                    hasExactMaster = masterVideoHashes.TryGetValue(currentImage.ContentHash, out exactMaster)
+                        && exactMaster.FileLength == currentImage.FileLength;
+                }
+                else
+                {
+                    hasExactMaster = masterHashes.TryGetValue(currentImage.ContentHash, out exactMaster)
+                        && FilesAreIdentical(exactMaster.Path, currentPath);
+                }
+
                 if (hasExactMaster)
                 {
                     if (!TryAddImageMatch(
@@ -595,8 +616,19 @@ namespace ImageDups
                     IndexedImage bestMaster = null;
                     int bestPerceptualSimilarity = -1;
                     double bestByteSimilarity = -1;
+                    IEnumerable<IndexedImage> candidates = masterPerceptualHashes;
+                    if (perceptualThreshold == MaximumPerceptualSimilarity)
+                    {
+                        List<IndexedImage> exactPerceptualMatches;
+                        candidates = masterPerceptualHashesByHash.TryGetValue(
+                            currentImage.PerceptualHash,
+                            out exactPerceptualMatches)
+                            ? exactPerceptualMatches
+                            : Enumerable.Empty<IndexedImage>();
+                    }
+
                     long currentLength = currentFileInfo.Length;
-                    foreach (IndexedImage candidate in masterPerceptualHashes)
+                    foreach (IndexedImage candidate in candidates)
                     {
                         int perceptualSimilarity =
                             GetPerceptualHashSimilarity(candidate.PerceptualHash, currentImage.PerceptualHash);
@@ -683,6 +715,8 @@ namespace ImageDups
                 .ToList();
             foreach (string cachePath in cachePaths)
             {
+                var cacheFileImages = new Dictionary<string, IndexedImage>(StringComparer.OrdinalIgnoreCase);
+                bool hasDuplicateRecords = false;
                 foreach (string line in File.ReadLines(cachePath))
                 {
                     string[] fields = line.Split('|');
@@ -702,12 +736,20 @@ namespace ImageDups
                             continue;
                         }
 
-                        cachedImages[Path.GetFullPath(path)] = new IndexedImage(
+                        string fullPath = Path.GetFullPath(path);
+                        var cachedImage = new IndexedImage(
                             path,
                             fields[3],
                             perceptualHash,
                             fileLength,
                             lastWriteTimeUtcTicks);
+                        if (cacheFileImages.ContainsKey(fullPath))
+                        {
+                            hasDuplicateRecords = true;
+                        }
+
+                        cacheFileImages[fullPath] = cachedImage;
+                        cachedImages[fullPath] = cachedImage;
                     }
                     catch (FormatException)
                     {
@@ -722,9 +764,56 @@ namespace ImageDups
                         // Out-of-range cache values are ignored and recalculated during this scan.
                     }
                 }
+
+                if (hasDuplicateRecords)
+                {
+                    CompactIndexCache(cachePath, cacheFileImages);
+                }
             }
 
             return cachedImages;
+        }
+
+        private static void CompactIndexCache(
+            string cachePath,
+            IDictionary<string, IndexedImage> cachedImages)
+        {
+            string temporaryPath = cachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllLines(
+                    temporaryPath,
+                    cachedImages.Values.Select(FormatIndexCacheRecord),
+                    new UTF8Encoding(false));
+                File.Replace(temporaryPath, cachePath, null);
+                Logger.Info("Compacted duplicate records in index cache: " + cachePath);
+            }
+            catch (IOException ex)
+            {
+                Logger.Warn("Could not compact duplicate records in index cache: " + cachePath, ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Logger.Warn("Could not compact duplicate records in index cache: " + cachePath, ex);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    try
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                    catch (IOException ex)
+                    {
+                        Logger.Warn("Could not remove temporary index cache file: " + temporaryPath, ex);
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        Logger.Warn("Could not remove temporary index cache file: " + temporaryPath, ex);
+                    }
+                }
+            }
         }
 
         private static bool IsImageCached(string path, IDictionary<string, IndexedImage> cachedImages)
@@ -742,11 +831,7 @@ namespace ImageDups
 
         private static void AppendIndexCache(string cachePath, IndexedImage image)
         {
-            string record = Convert.ToBase64String(Encoding.UTF8.GetBytes(Path.GetFullPath(image.Path)))
-                + "|" + image.FileLength.ToString(CultureInfo.InvariantCulture)
-                + "|" + image.LastWriteTimeUtcTicks.ToString(CultureInfo.InvariantCulture)
-                + "|" + image.ContentHash
-                + "|" + image.PerceptualHash.ToString("X16", CultureInfo.InvariantCulture)
+            string record = FormatIndexCacheRecord(image)
                 + Environment.NewLine;
             byte[] bytes = Encoding.UTF8.GetBytes(record);
             using (var stream = new FileStream(cachePath, FileMode.Append, FileAccess.Write, FileShare.Read))
@@ -754,6 +839,15 @@ namespace ImageDups
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush(true);
             }
+        }
+
+        private static string FormatIndexCacheRecord(IndexedImage image)
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(Path.GetFullPath(image.Path)))
+                + "|" + image.FileLength.ToString(CultureInfo.InvariantCulture)
+                + "|" + image.LastWriteTimeUtcTicks.ToString(CultureInfo.InvariantCulture)
+                + "|" + image.ContentHash
+                + "|" + image.PerceptualHash.ToString("X16", CultureInfo.InvariantCulture);
         }
 
         private static void RemoveIndexCacheEntry(string root, string imagePath)
